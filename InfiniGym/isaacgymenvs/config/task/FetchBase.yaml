@@ -2,6 +2,10 @@
 name: FetchBase
 prefix: Debug
 
+sceneConfigPath: ""
+benchmark: True
+use_eval: True
+
 physics_engine: ${..physics_engine}
 experiment_name: ''
 
@@ -19,12 +23,29 @@ eval:
 
 # if given, will override the device setting in gym. 
 env:
+  # showSupportPolygon: True
+  # supportPolygonColor: [1.0, 1.0, 0.0]
+
+
+
+  SceneMode: infinigen  # choice: infinigen, Fetchbench # scene 회전 유무
   numEnvs: ${resolve_default:1, ${...num_envs}}
-  envSpacing: 2.5
+  envSpacing: 75   # discard_object_placement → self._scene_spacing  ■default 2.5
   episodeLength: 150
   enableDebugVis: False
 
-  numObjs: 15
+  sceneCategory: Test
+  sceneIdx: [3]
+
+  numSceneObjs: 10
+  # numSceneObjs: 30  # scene에 배치할 obj 수 
+                    # (discard = numSceneObjs - numObjs, discard는 다양성 확보 위해
+                    # (예를들어 20개 중 15개만 뽑으면 C(20,15)=15504가지 조합 가능))
+  numObjs: 30
+  # numObjs: 60       # sample_random_objects()로 뽑을 obj 수 (metadata.csv에서 뽑을 수)
+  numSceneCombos: 0
+  numCombos: 0
+
   numTasks: null
   randomGoalIndex: False
 
@@ -56,12 +77,13 @@ env:
 
   scene:
     buffer_ratio: 0.1
-    max_num_objs: 15
+    max_num_objs: 15  # discard_object_placement → self._max_num_spawned_objs  ■default 15
     friction: 0.5
     contact_offset: 0.001
     restitution: 0.0
 
   objects:
+    randomize_config: False # 객체 물리 속성 랜덤화 여부
     contact_offset: 0.0005
     friction: 1.0
     density: 150.0

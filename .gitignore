@@ -10,3 +10,5 @@ InfiniGym/runs
 InfiniGym/logs
 InfiniGym/videos
 
+/asset_release/
+/ShapeNetSem/

@@ -9,7 +9,7 @@ from isaacgym import gymutil, gymtorch, gymapi
 from isaacgymenvs.utils.torch_jit_utils import to_torch, get_axis_params, tensor_clamp, \
     tf_vector, tf_combine, quat_mul, quat_conjugate, quat_apply, quat_to_angle_axis, tf_inverse
 from isaacgymenvs.tasks.fetch.vec_task import VecTask
-from isaacgymenvs.tasks.fetch.trimesh_scene import TrimeshRearrangeScene
+from isaacgymenvs.tasks.fetch.infini_scene.trimesh_scene import TrimeshRearrangeScene
 from isaacgymenvs.tasks.fetch.utils.load_utils import (sample_random_scene,
                                                  get_franka_panda_asset,
                                                  sample_random_objects,
@@ -21,6 +21,10 @@ class InfiniScene(VecTask):
     def __init__(self, cfg, rl_device, sim_device, graphics_device_id,
                  headless, virtual_screen_capture, force_render):
         self.cfg = cfg
+
+        # If arrangement generation fails for any env, set this flag and
+        # callers (e.g., generate_scenes) can detect and skip counting this attempt.
+        self._arrangement_failed = False
 
         self.scene_config_path = f'{self.cfg["sceneConfigPath"]}'
         self.loader = InfiniSceneLoader(self.scene_config_path)
@@ -53,6 +57,7 @@ class InfiniScene(VecTask):
         # Robot state
         self._q = None                      # Joint positions           (n_envs, n_dof)
         self._qd = None                     # State of all rigid bodies (n_envs, n_bodies, 13)
+        self._scene_default_dof_pos = None
         self._robot_base_state = None
         self._table_base_state = None
         self._eef_state = None              # end effector state (at grasping point)
@@ -95,6 +100,14 @@ class InfiniScene(VecTask):
                          graphics_device_id=graphics_device_id, headless=headless,
                          virtual_screen_capture=virtual_screen_capture, force_render=force_render)
 
+        # If arrangement generation failed during `_create_envs`, the sim/env
+        # creation and tensor initialization may not have completed. In that
+        # case, skip further initialization in this constructor to avoid
+        # referencing uninitialized tensors (e.g. self._q is None).
+        if getattr(self, "_arrangement_failed", False):
+            print("InfiniScene init aborted due to arrangement failure.")
+            return
+
         self.robot_default_dof_pos = (to_torch([-0.31267092, -1.1996635, 0.05781832, -2.1767514,
                       0.06494738, 0.9786396, 0.53001183, 0.04, 0.04], device=self.device))
 
@@ -113,14 +126,36 @@ class InfiniScene(VecTask):
             'combo_category': self.cfg["env"].get("comboCategory", None)
         }
         # Each Scene contains 15 assets
-        assert asset_config['num_objects'] + asset_config['num_combos'] * 2 == 15
+        # assert asset_config['num_objects'] + asset_config['num_combos'] * 2 == 30
 
         mode = 'ws' if not self.cfg['benchmark'] else 'benchmark'
 
         self.scene_asset = sample_random_scene(asset_config['scene_category'], asset_config['scene_idx'], mode=mode)
         self.object_asset = sample_random_objects(asset_config['num_objects'], eval_only=self.cfg['use_eval'], mode=mode)
-        self.object_combo_asset = sample_random_combos(asset_config['num_combos'], asset_config['combo_category'], mode=mode)
+        # self.object_combo_asset = sample_random_combos(asset_config['num_combos'], asset_config['combo_category'], mode=mode)
+        self.object_combo_asset = [] 
 
+    def print_asset_collision_info(self, asset, asset_name="asset"):
+        num_bodies = self.gym.get_asset_rigid_body_count(asset)
+        num_shapes = self.gym.get_asset_rigid_shape_count(asset)
+        print(f"[{asset_name}] rigid_bodies={num_bodies}, collision_shapes={num_shapes}")
+
+        print(f"[{asset_name}] rigid body names")
+        for body_idx in range(num_bodies):
+            body_name = self.gym.get_asset_rigid_body_name(asset, body_idx)
+            print(f"  body[{body_idx}] {body_name}")
+
+        print(f"[{asset_name}] collision shape properties")
+        shape_props = self.gym.get_asset_rigid_shape_properties(asset)
+        for shape_idx, p in enumerate(shape_props):
+            print(
+                f"  shape[{shape_idx}] "
+                f"friction={p.friction}, restitution={p.restitution}, "
+                f"rolling_friction={p.rolling_friction}, torsion_friction={p.torsion_friction}, "
+                f"contact_offset={p.contact_offset}, rest_offset={p.rest_offset}, "
+                f"thickness={p.thickness}, compliance={p.compliance}"
+            )
+        
     def load_robot_asset(self):
         # load robot asset
         asset_options = gymapi.AssetOptions()
@@ -184,7 +219,7 @@ class InfiniScene(VecTask):
         asset_options = gymapi.AssetOptions()
         asset_options.flip_visual_attachments = False
         asset_options.fix_base_link = True
-        asset_options.collapse_fixed_joints = True
+        asset_options.collapse_fixed_joints = False
         asset_options.disable_gravity = True
         asset_options.thickness = 0.0
         asset_options.use_mesh_materials = True
@@ -203,6 +238,7 @@ class InfiniScene(VecTask):
             p.rest_offset = 0.0
             p.contact_offset = self.cfg["env"]["scene"]["contact_offset"]
         self.gym.set_asset_rigid_shape_properties(s, s_props)
+        self.print_asset_collision_info(s, asset_name=scene['name'])
         scene['asset'] = s
 
         self.loader.scene_asset_config.update({
@@ -283,6 +319,8 @@ class InfiniScene(VecTask):
         return objects
 
     def load_object_combo_asset(self, combos):
+        if combos is None or len(combos) == 0:
+            return []
 
         for combo in combos:
             assets = []
@@ -387,15 +425,16 @@ class InfiniScene(VecTask):
         self.sample_random_asset()
         robot_asset = self.load_robot_asset()
         scene_assets = self.load_scene_asset(self.scene_asset)
-        # load object asset
-        object_assets = self.load_object_asset(self.object_asset)
+        # keep raw object list for arrangement (assets loaded after placement)
+        raw_object_assets = self.object_asset
         object_combo_assets = self.load_object_combo_asset(self.object_combo_asset)
 
-        self.num_objs = len(object_combo_assets) * 2 + len(object_assets)
+        # self.num_objs = len(object_combo_assets) * 2 + len(object_assets)
+        self.num_objs = self.cfg["env"]["numSceneObjs"]
 
         self.robot_asset = robot_asset
         self.scene_asset = scene_assets
-        self.object_asset = object_assets
+        self.object_asset = raw_object_assets
         self.object_combo_asset = object_combo_assets
 
         trimesh_scene = TrimeshRearrangeScene(scene_assets['meshes'],
@@ -422,22 +461,8 @@ class InfiniScene(VecTask):
         # compute aggregate size
         num_franka_bodies = self.gym.get_asset_rigid_body_count(robot_asset)
         num_franka_shapes = self.gym.get_asset_rigid_shape_count(robot_asset)
-        num_cabinet_bodies = self.gym.get_asset_rigid_body_count(scene_asset)
-        num_cabinet_shapes = self.gym.get_asset_rigid_shape_count(scene_asset)
-
-        num_objects_bodies = 0
-        num_objects_shapes = 0
-        for c in object_combo_assets:
-            num_objects_bodies += self.gym.get_asset_rigid_body_count(c['asset'][0])
-            num_objects_shapes += self.gym.get_asset_rigid_shape_count(c['asset'][0])
-            num_objects_bodies += self.gym.get_asset_rigid_body_count(c['asset'][1])
-            num_objects_shapes += self.gym.get_asset_rigid_shape_count(c['asset'][1])
-        for o in object_assets:
-            num_objects_bodies += self.gym.get_asset_rigid_body_count(o['asset'])
-            num_objects_shapes += self.gym.get_asset_rigid_shape_count(o['asset'])
-
-        max_agg_bodies = num_franka_bodies + num_cabinet_bodies + num_objects_bodies + 1
-        max_agg_shapes = num_franka_shapes + num_cabinet_shapes + num_objects_shapes + 1
+        num_scene_bodies = self.gym.get_asset_rigid_body_count(scene_asset)
+        num_scene_shapes = self.gym.get_asset_rigid_shape_count(scene_asset)
 
         self.cam_params = self.get_camera_params()
 
@@ -459,13 +484,38 @@ class InfiniScene(VecTask):
             # NOTE: franka should ALWAYS be loaded first in sim!
 
             gym_transform = np.array([[-1, 0, 0, 0], [0, -1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]])
-            num_discarded_objs = len(object_assets) - self.cfg["env"]["numSceneObjs"]
+            num_discarded_objs = len(raw_object_assets) - self.cfg["env"]["numSceneObjs"]
             num_discarded_combos = len(object_combo_assets) - self.cfg["env"]["numSceneCombos"]
 
-            n_combos, n_objects = trimesh_scene.random_arrangement(object_assets, object_combo_assets,
+            n_combos, n_objects = trimesh_scene.random_arrangement(self.cfg["env"]["numSceneObjs"], 
+                                                                   raw_object_assets, object_combo_assets,
                                                                    num_obj_discarded=num_discarded_objs,
                                                                    num_combo_discarded=num_discarded_combos)
 
+            # If arrangement returned a different number of objects than expected,
+            # abort generation early for this entire scene attempt. This prevents
+            # partial environments from being created and later causing empty-stack
+            # errors when saving task configs.
+            if len(n_objects) != self.num_objs:
+                print(f"Arrangement mismatch for env {i}: expected {self.num_objs}, got {len(n_objects)}. Aborting generation.")
+                self._arrangement_failed = True
+                return
+
+            object_assets = self.load_object_asset(n_objects)
+
+            num_objects_bodies = 0
+            num_objects_shapes = 0
+            for c in object_combo_assets:
+                num_objects_bodies += self.gym.get_asset_rigid_body_count(c['asset'][0])
+                num_objects_shapes += self.gym.get_asset_rigid_shape_count(c['asset'][0])
+                num_objects_bodies += self.gym.get_asset_rigid_body_count(c['asset'][1])
+                num_objects_shapes += self.gym.get_asset_rigid_shape_count(c['asset'][1])
+            for o in object_assets:
+                num_objects_bodies += self.gym.get_asset_rigid_body_count(o['asset'])
+                num_objects_shapes += self.gym.get_asset_rigid_shape_count(o['asset'])
+
+            max_agg_bodies = num_franka_bodies + num_scene_bodies + num_objects_bodies + 1
+            max_agg_shapes = num_franka_shapes + num_scene_shapes + num_objects_shapes + 1
             # towards +x
             robot_base_pos, robot_table_pos = trimesh_scene.sample_robot_base()
             robot_start_pose = gymapi.Transform()
@@ -477,14 +527,31 @@ class InfiniScene(VecTask):
             table_start_pose.r = gymapi.Quat(0.0, 0.0, 0.0, 1.0)
 
             scene_start_pose = gymapi.Transform()
-            scene_start_pose.p = gymapi.Vec3(0.0, 0.0, 0.0)
+
+            ##### 
+            # 해당 부분 infinigen으로 만든 scene사용 시 
+            # scene joint 열리고 닫히는거 고려하여 유동적으로 위치할 수 있도록 수정 필요
+            if self.cfg["env"]["SceneMode"] == "infinigen":
+                scene_start_pose.p = gymapi.Vec3(0.5, 0.0, 0.0)
+            else:
+                scene_start_pose.p = gymapi.Vec3(0.0, 0.0, 0.0)
+            #####
+
             quat = quat_mul(to_torch([0.0, 0.0, 1.0, 0.0], device='cpu'),
                             to_torch([0.707, 0.0, 0.0, 0.707], device='cpu'))
+            scene_rotation_mode = self.cfg["env"].get("SceneMode", "FetchBench")
+            if scene_rotation_mode == "infinigen":
+                quat = to_torch([0.0, 0.0, 1.0, 0.0], device='cpu')
+            else:
+                quat = quat_mul(to_torch([0.0, 0.0, 1.0, 0.0], device='cpu'),
+                                to_torch([0.707, 0.0, 0.0, 0.707], device='cpu'))
             scene_start_pose.r = gymapi.Quat(*quat.numpy())
-
+            # print("scene start pose")
+            # print(scene_start_pose.p.z)
             if self.aggregate_mode >= 3:
                 self.gym.begin_aggregate(env_ptr, max_agg_bodies, max_agg_shapes, True)
-
+            # print("robot start pose")
+            # print(robot_start_pose.p.z)
             robot_actor = self.gym.create_actor(env_ptr, robot_asset, robot_start_pose, "robot", i, 0, seg_idx)
             seg_idx += 1
             self.gym.set_actor_dof_properties(env_ptr, robot_actor, robot_dof_props)
@@ -502,12 +569,18 @@ class InfiniScene(VecTask):
             if self.aggregate_mode == 1:
                 self.gym.begin_aggregate(env_ptr, max_agg_bodies, max_agg_shapes, True)
 
+            trig = None
+            if self.cfg["env"]["SceneMode"] == "infinigen":
+                trig = 'infinigen'
+            else:
+                trig = 'FetchBench'
+
             object_actors, object_init_states, object_init_labels, object_coms = [], [], [], []
             for k, cbo in enumerate(n_combos):
                 assert f'obj_combo_{k}' == cbo['name']  # make sure the order is the same
                 combo_transform = np.array([[1, 0, 0, 0], [0, 0, -1, 0],
                                             [0, 1, 0, 0], [0, 0, 0, 1]], dtype=np.float32)
-                combo_start_pose = matrix_to_pose(cbo['placement_pose'], transform=gym_transform,
+                combo_start_pose = matrix_to_pose(trig, cbo['placement_pose'], transform=gym_transform,
                                                   pre_transform=combo_transform)
                 organizer_actor = self.gym.create_actor(env_ptr, cbo['asset'][0], combo_start_pose,
                                                         f"obj_combo_{k}_organizer", i, 0, seg_idx)
@@ -536,7 +609,17 @@ class InfiniScene(VecTask):
             for k, o in enumerate(n_objects):
                 assert f'obj_{k}' == o['name']  # make sure the order is the same
 
-                obj_start_pose = matrix_to_pose(o['placement_pose'], transform=gym_transform)
+                obj_start_pose = matrix_to_pose(trig, o['placement_pose'], transform=gym_transform)
+                # print("*"*50)
+                # print("obj_start_pose for object ", k)
+                # print(obj_start_pose.p.x)
+                # print(obj_start_pose.p.y)
+                # print(obj_start_pose.p.z)
+                # print(obj_start_pose.r.x)
+                # print(obj_start_pose.r.y)
+                # print(obj_start_pose.r.z)
+                # print(obj_start_pose.r.w)
+
                 object_actor = self.gym.create_actor(env_ptr, o['asset'], obj_start_pose, f"obj_{k}", i, 0, seg_idx)
                 seg_idx += 1
                 object_actors.append(object_actor)
@@ -546,6 +629,7 @@ class InfiniScene(VecTask):
                                            obj_start_pose.p.z, obj_start_pose.r.x,
                                            obj_start_pose.r.y, obj_start_pose.r.z,
                                            obj_start_pose.r.w, 0, 0, 0, 0, 0, 0])
+                print(f'obj{k} label: {o["placement_label"]}')
                 object_init_labels.append(f'rigid_obj_{o["placement_label"]}')
 
             # add cams
@@ -710,6 +794,7 @@ class InfiniScene(VecTask):
         # robot states
         self._q = self._dof_state[..., 0]
         self._qd = self._dof_state[..., 1]
+        self._scene_default_dof_pos = self._q[:, self.num_robot_dofs:self.num_robot_dofs + self.num_scene_dofs].clone()
         self._robot_base_state = self._root_state[:, 0, :]
         self._table_base_state = self._root_state[:, 1, :]
         self._eef_state = self._rigid_body_state[:, self.robot_handles["hand"], :]
@@ -771,8 +856,8 @@ class InfiniScene(VecTask):
 
         # Refresh states
         self.states.update({
-            "q": self._q[:, :],
-            "qd": self._qd[:, :],
+            "q": self._q[:, :self.num_robot_dofs],
+            "qd": self._qd[:, :self.num_robot_dofs],
             "eef_pos": self._eef_state[:, :3],
             "eef_quat": self._eef_state[:, 3:7],
             "eef_vel": self._eef_state[:, 7:],
@@ -800,17 +885,30 @@ class InfiniScene(VecTask):
         pos = pos.repeat(len(env_ids), 1)
 
         # Reset the internal obs accordingly
-        self._q[env_ids, :] = pos
-        self._qd[env_ids, :] = torch.zeros_like(self._qd[env_ids])
+        self._q[env_ids, :self.num_robot_dofs] = pos
+        self._qd[env_ids, :self.num_robot_dofs] = torch.zeros_like(self._qd[env_ids, :self.num_robot_dofs])
+
+        scene_dof_start = self.num_robot_dofs
+        scene_dof_end = self.num_robot_dofs + self.num_scene_dofs
+        if self.num_scene_dofs > 0:
+            self._q[env_ids, scene_dof_start:scene_dof_end] = self._scene_default_dof_pos[env_ids]
+            self._qd[env_ids, scene_dof_start:scene_dof_end] = 0.0
 
         # Set any position control to the current position, and any vel / effort control to be 0
         # NOTE: Task takes care of actually propagating these controls in sim using the SimActions API
-        self._pos_control[env_ids, :] = pos
-        self._effort_control[env_ids, :] = torch.zeros_like(pos)
-        self._vel_control[env_ids, :] = torch.zeros_like(pos)
+        self._pos_control[env_ids, :] = 0.0
+        self._effort_control[env_ids, :] = 0.0
+        self._vel_control[env_ids, :] = 0.0
+        self._pos_control[env_ids, :self.num_robot_dofs] = pos
 
         # Deploy updates
         multi_env_ids_int32 = self._global_indices[env_ids, 0].flatten()
+        if self.num_scene_dofs > 0:
+            scene_actor_ids_int32 = self._global_indices[env_ids, 2].flatten()
+            dof_actor_ids_int32 = torch.cat([multi_env_ids_int32, scene_actor_ids_int32], dim=0)
+        else:
+            dof_actor_ids_int32 = multi_env_ids_int32
+
         self.gym.set_dof_position_target_tensor_indexed(self.sim,
                                                         gymtorch.unwrap_tensor(self._pos_control),
                                                         gymtorch.unwrap_tensor(multi_env_ids_int32),
@@ -825,8 +923,8 @@ class InfiniScene(VecTask):
                                                         len(multi_env_ids_int32))
         self.gym.set_dof_state_tensor_indexed(self.sim,
                                               gymtorch.unwrap_tensor(self._dof_state),
-                                              gymtorch.unwrap_tensor(multi_env_ids_int32),
-                                              len(multi_env_ids_int32))
+                                              gymtorch.unwrap_tensor(dof_actor_ids_int32),
+                                              len(dof_actor_ids_int32))
 
         multi_env_ids_objects_int32 = self._global_indices[env_ids, 3:].flatten()
         self._obj_state[env_ids, :] = self._obj_init_state[env_ids, :]
@@ -927,7 +1025,7 @@ class InfiniScene(VecTask):
                 for j, img in enumerate(images):
                     imageio.imwrite(f'{self.scene_config_path}/env_{i}_{j}.png', img)
 
-    def save_env(self, max_envs=1):
+    def save_env(self, max_envs=1, force_save=False):
         saved = []
         for i in range(self.num_envs):
             robot_state = self._robot_base_state[i].cpu().numpy()
@@ -937,7 +1035,10 @@ class InfiniScene(VecTask):
             object_state = self._obj_state[i].cpu().numpy()
             obj_init_label = self._obj_init_label[i]
 
-            res = self.check_env_status(i)
+            if force_save:
+                res = True
+            else:
+                res = self.check_env_status(i)
             saved.append(res)
             if not res:
                 continue
@@ -951,7 +1052,8 @@ class InfiniScene(VecTask):
             self.loader.object_labels.append(obj_init_label)
 
         # dump env configs
-        self.loader.save_env_config()
+        # self.loader.save_env_config()
+        self.loader.save_env_config(save_task_config=any(saved))
         return saved
 
 
@@ -960,11 +1062,14 @@ class InfiniScene(VecTask):
 #####################################################################
 
 
-def matrix_to_pose(mtx, transform=None, pre_transform=None):
+def matrix_to_pose(trig, mtx, transform=None, pre_transform=None):
     if transform is not None:
         mtx = transform @ mtx
     if pre_transform is not None:
         mtx = mtx @ pre_transform
+    if trig == 'infinigen':
+        mtx = mtx.copy()
+        mtx[:3, 3] += np.array([0.5, 0.0, 0.0], dtype=mtx.dtype)
 
     pose = gymapi.Transform()
     pose.p = gymapi.Vec3(*mtx[:3, 3])

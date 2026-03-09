@@ -51,7 +51,7 @@ class FetchBase(VecTask):
         self.states = {}                          # will be dict filled with relevant states to use for reward calculation
         self.robot_handles = {}                   # will be dict mapping names to relevant sim handles
         self.num_robot_dofs = None                # Total number of DOFs per env
-        self.num_objs = self.cfg["env"]["numObjs"]
+        self.num_objs = self.cfg["env"]["numSceneObjs"]
 
         # Tensor placeholders
         self._root_state = None             # State of root body        (n_envs, 13)
@@ -118,7 +118,6 @@ class FetchBase(VecTask):
         super().__init__(config=self.cfg, rl_device=rl_device, sim_device=sim_device,
                          graphics_device_id=graphics_device_id, headless=headless,
                          virtual_screen_capture=virtual_screen_capture, force_render=force_render)
-
         # OSC PD
         self.kp = to_torch([self.cfg["env"]["robot"]["osc_gain"]] * 6, device=self.device)
         self.kd = 2 * torch.sqrt(self.kp)
@@ -219,7 +218,7 @@ class FetchBase(VecTask):
         asset_options = gymapi.AssetOptions()
         asset_options.flip_visual_attachments = False
         asset_options.fix_base_link = True
-        asset_options.collapse_fixed_joints = True
+        asset_options.collapse_fixed_joints = False
         asset_options.disable_gravity = True
         asset_options.thickness = 0.0
         asset_options.use_mesh_materials = True
@@ -510,8 +509,6 @@ class FetchBase(VecTask):
         self.num_robot_dofs = self.gym.get_asset_dof_count(robot_asset)
         robot_dof_props = self.get_robot_dof_props(robot_asset)
 
-        print("num robot bodies: ", self.num_robot_bodies)
-        print("num robot dofs: ", self.num_robot_dofs)
 
         max_agg_bodies = self.cfg["env"]["aggregateBody"]
         max_agg_shapes = self.cfg["env"]["aggregateShape"]
@@ -561,6 +558,7 @@ class FetchBase(VecTask):
             self.gym.set_actor_dof_properties(env_ptr, robot_actor, robot_dof_props)
 
             table_actor = self.gym.create_actor(env_ptr, table_asset['asset'], table_start_pose, "table", n, 0, seg_idx)
+            print(f"[DEBUG] env {n}: create_actor table done", flush=True)
             seg_idx += 1
             self.gym.set_rigid_body_color(env_ptr, table_actor, 0, gymapi.MESH_VISUAL, gymapi.Vec3(0.0, 0.0, 0.0))
 
@@ -568,6 +566,7 @@ class FetchBase(VecTask):
                 self.gym.begin_aggregate(env_ptr, max_agg_bodies, max_agg_shapes, True)
 
             scene_actor = self.gym.create_actor(env_ptr, scene_asset['asset'], scene_start_pose, "scene", n, 0, seg_idx)
+            print(f"[DEBUG] env {n}: create_actor scene done", flush=True)
             seg_idx += 1
 
             if self.aggregate_mode == 1:
@@ -589,7 +588,7 @@ class FetchBase(VecTask):
                 object_ref_points.append(apply_transform(cbo['metadata']['organizer_com'], combo_transform))
                 object_grasp_poses.append(None)
 
-                self.gym.set_rigid_body_color(env_ptr, org_actor, 0, gymapi.MESH_VISUAL, self.default_obj_color)
+                # self.gym.set_rigid_body_color(env_ptr, org_actor, 0, gymapi.MESH_VISUAL, self.default_obj_color)
 
                 obj_start_pose = vec_state_to_pose(loader.object_poses[0][2*k+1])
                 obj_actor = self.gym.create_actor(env_ptr, cbo['asset'][1], obj_start_pose,
@@ -598,7 +597,7 @@ class FetchBase(VecTask):
                 object_actors.append(obj_actor)
                 object_ref_points.append(apply_transform(cbo['metadata']['object_com'], combo_transform))
                 object_grasp_poses.append(None)   # Todo: Add sample Grasp Poses.
-                self.gym.set_rigid_body_color(env_ptr, obj_actor, 0, gymapi.MESH_VISUAL, self.default_obj_color)
+                # self.gym.set_rigid_body_color(env_ptr, obj_actor, 0, gymapi.MESH_VISUAL, self.default_obj_color)
 
             idx_offset = len(combo_assets) * 2
             # add rigid objects
@@ -616,7 +615,7 @@ class FetchBase(VecTask):
                 object_grasp_poses.append(torch.concat([t, q], dim=-1))
 
                 # set default color
-                self.gym.set_rigid_body_color(env_ptr, object_actor, 0, gymapi.MESH_VISUAL, self.default_obj_color)
+                # self.gym.set_rigid_body_color(env_ptr, object_actor, 0, gymapi.MESH_VISUAL, self.default_obj_color)
 
             # add env cams
             cams = []
@@ -807,14 +806,14 @@ class FetchBase(VecTask):
         pos = pos.repeat(len(env_ids), 1)
 
         # Reset the internal obs accordingly
-        self._q[env_ids, :] = pos
-        self._qd[env_ids, :] = torch.zeros_like(self._qd[env_ids])
+        self._q[env_ids, :self.num_robot_dofs] = pos
+        self._qd[env_ids, :self.num_robot_dofs] = torch.zeros_like(self._qd[env_ids, :self.num_robot_dofs])
 
         # Set any position control to the current position, and any vel / effort control to be 0
         # NOTE: Task takes care of actually propagating these controls in sim using the SimActions API
-        self._pos_control[env_ids, :] = pos
-        self._effort_control[env_ids, :] = torch.zeros_like(pos)
-        self._vel_control[env_ids, :] = torch.zeros_like(pos)
+        self._pos_control[env_ids, :self.num_robot_dofs] = pos
+        self._effort_control[env_ids, :self.num_robot_dofs] = torch.zeros_like(pos)
+        self._vel_control[env_ids, :self.num_robot_dofs] = torch.zeros_like(pos)
 
         # Deploy updates
         multi_env_ids_int32 = self._global_indices[env_ids, 0].flatten()
@@ -995,9 +994,10 @@ class FetchBase(VecTask):
     def gripper_step(self, u_gripper):
         # Control gripper
         u_fingers = torch.zeros_like(self._gripper_control)
+        robot_gripper_slice = slice(self.num_robot_dofs - 2, self.num_robot_dofs)
         if u_gripper is None:
             if self.cfg["env"]["gripperControlType"] == 'position':
-                u_fingers[:] = self.states["q"][:, -2:].clone()
+                u_fingers[:] = self.states["q"][:, robot_gripper_slice].clone()
             if self.cfg["env"]["gripperControlType"] == 'effort':
                 # keep the hand open with effort control
                 u_fingers[:] = torch.ones_like(self._gripper_control) * 5.
@@ -1013,9 +1013,9 @@ class FetchBase(VecTask):
         elif self.cfg["env"]["gripperControlType"] == 'effort':
             # tune the controller for stability
             r = self.cfg["env"]["robot"]["gripper_force_damp_ratio"]
-            delta_q_0 = self.states["q"][:, -2] - self.robot_dof_upper_limits[-2]
+            delta_q_0 = self.states["q"][:, self.num_robot_dofs - 2] - self.robot_dof_upper_limits[-2]
             u_fingers[:, 0] = torch.where(u_gripper >= 0.0, 20., -100. - r * delta_q_0)
-            delta_q_0 = self.states["q"][:, -1] - self.robot_dof_upper_limits[-1]
+            delta_q_0 = self.states["q"][:, self.num_robot_dofs - 1] - self.robot_dof_upper_limits[-1]
             u_fingers[:, 1] = torch.where(u_gripper >= 0.0, 20.,  -100. - r * delta_q_0)
         else:
             raise NotImplementedError
@@ -1033,12 +1033,12 @@ class FetchBase(VecTask):
         pos[:] = state
 
         # Reset the internal obs accordingly
-        self._q[:, :] = pos
-        self._qd[:, :] = torch.zeros_like(self._qd)
+        self._q[:, :self.num_robot_dofs] = pos
+        self._qd[:, :self.num_robot_dofs] = torch.zeros_like(self._qd[:, :self.num_robot_dofs])
 
-        self._pos_control[:, :] = pos
-        self._effort_control[:, :] = torch.zeros_like(pos)
-        self._vel_control[:, :] = torch.zeros_like(pos)
+        self._pos_control[:, :self.num_robot_dofs] = pos
+        self._effort_control[:, :self.num_robot_dofs] = torch.zeros_like(pos)
+        self._vel_control[:, :self.num_robot_dofs] = torch.zeros_like(pos)
 
         # Deploy updates
         multi_env_ids_int32 = self._global_indices[:, 0].flatten().contiguous()

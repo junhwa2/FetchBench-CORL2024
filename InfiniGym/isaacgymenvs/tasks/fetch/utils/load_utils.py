@@ -14,7 +14,14 @@ SCENE_PATH = f"{ASSET_PATH}/Task"
 def get_franka_panda_asset(type='franka_r3', mode='ws'):
     if mode == 'ws':
         paths = {
-            'asset_root': './assets',
+            # 'asset_root': './assets',
+            'asset_root': '../assets',
+            'urdf_file': f'urdf/franka_description/robots/{type}.urdf'
+        }
+    elif mode == 'benchmark':
+        paths = {
+            # 'asset_root': './assets',
+            'asset_root': '../assets',
             'urdf_file': f'urdf/franka_description/robots/{type}.urdf'
         }
     else:
@@ -104,6 +111,12 @@ Object Assets
 
 def load_object_asset(obj_path):
     mesh = trimesh.load_mesh(f'{obj_path}/mesh.obj')
+    # 현재 obj는 shapenet에서 직접 받은 obj로 정점 등이 기존 fetchbench와 달라 mtl을 사용하기위해서는 shapenet의 obj 사용 필수
+    # shapenet의 obj는 list, tuple 형태로 로드되므로 하나의 trimesh.Trimesh로 합쳐줘야함
+    if isinstance(mesh, trimesh.Scene):
+        mesh = trimesh.util.concatenate([g for g in mesh.geometry.values()])
+    elif isinstance(mesh, (list, tuple)):
+        mesh = trimesh.util.concatenate(mesh)
     assert isinstance(mesh, trimesh.Trimesh)
     stable_poses = np.load(f'{obj_path}/stable_poses.npy')
 
@@ -333,12 +346,16 @@ class InfiniSceneLoader(object):
 
     def append_pose(self, pose, cat='scene'):
         if cat == 'scene':
+            self.scene_pose = list(self.scene_pose)
             self.scene_pose.append(pose)
         elif cat == 'robot':
+            self.robot_pose = list(self.robot_pose)
             self.robot_pose.append(pose)
         elif cat == 'camera':
+            self.camera_poses = list(self.camera_poses)
             self.camera_poses.append(pose)
         elif cat == 'object':
+            self.object_poses = list(self.object_poses)
             self.object_poses.append(pose)
         else:
             raise NotImplementedError

@@ -70,7 +70,7 @@ class FetchNaive(FetchBase):
             'computing_time':  [0 for _ in range(self.num_envs)]
         }
 
-        self.repeat()
+        # self.repeat()
 
         self.set_default_color()
 

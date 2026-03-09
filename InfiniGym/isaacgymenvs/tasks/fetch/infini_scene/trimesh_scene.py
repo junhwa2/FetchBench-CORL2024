@@ -29,6 +29,10 @@ import numpy as np
 import shapely
 from copy import deepcopy
 from isaacgymenvs.tasks.fetch.utils.load_utils import sample_random_objects, sample_random_scene
+import os
+import time
+import glob
+import re
 
 
 def apply_T(pts, T):
@@ -99,7 +103,6 @@ class SupportSurface(object):
 
         pts = trimesh.path.polygons.sample(selected[0], count=1)
         pts3d = np.append(pts, 0) + selected[1].translation
-
         if selected[1].label == 'on_wall':
             pts3d = (
                 apply_T(pts3d,
@@ -121,7 +124,7 @@ class SupportSurface(object):
         for s in self.surfaces:
             if s.label in labels:
                 continue
-            elif s.label in ['on_table', 'on_shelf', 'in_basket', 'in_drawer']:
+            elif s.label in ['on_table', 'on_shelf', 'in_basket', 'in_drawer', 'in_cabinet']:
                 labels.append(s.label)
         return labels
 
@@ -151,7 +154,7 @@ class TrimeshRearrangeScene(object):
         self._distance_above_support = kwargs.get('dist_above_support', 0.005)  # distance at which objects will be sampled
         self._erosion_ratio = kwargs.get('buffer_ratio', 0.2)  # distance to the edge of the polygon
         self._label_prob = kwargs.get('label_probs', {'in_basket': 0.5, 'on_shelf': 0.3, 'on_table': 0.2,
-                                                      'in_drawer': 0.3, 'on_wall': 1.0})
+                                                      'on_wall': 1.0, 'in_drawer': 0.3, 'in_cabinet': 0.3})
 
         self.collision_manager = trimesh.collision.CollisionManager()
 
@@ -189,11 +192,11 @@ class TrimeshRearrangeScene(object):
             dim = np.max(obj_mesh.bounding_box_oriented.extents)
             pts3d, _ = self._support_surface.sample_point3d_uniform(label=sample_label,
                                                                     buffer_dist=-self._erosion_ratio * dim)
-            pts3d += np.array([0., 0., self._distance_above_support])
-
             if pts3d is None:
                 iter += 1
                 continue
+
+            pts3d += np.array([0., 0., self._distance_above_support])
 
             placement_T = tra.translation_matrix(pts3d)
             pose = self.sample_random_stable_pose(obj_poses)
@@ -205,7 +208,7 @@ class TrimeshRearrangeScene(object):
             iter += 1
 
             placement_T = np.dot(placement_T, pose)
-
+            # print("placement_T: ", placement_T)
         return valid, placement_T, sample_label
 
     def find_combo_placement(self, i, obj_mesh, obj_poses, in_plane_rot=False,
@@ -266,8 +269,9 @@ class TrimeshRearrangeScene(object):
         assert self._scene_bounds[0][0] + self._scene_spacing >= 1.
 
         dy = 2 * self._scene_spacing
-        ys = np.arange(-self._scene_spacing + 0.2, self._scene_spacing - 0.2, dy / (self._max_num_spawned_objs+1))
-        x = - self._scene_spacing + 0.25
+        ys = np.arange(-self._scene_spacing + 0.2, self._scene_spacing - 0.2, 0.3)
+        # x = - self._scene_spacing + 0.25
+        x = - 2.25
         translation = tra.translation_matrix(np.array([x, ys[i], self._distance_above_support]))
         placement_T = np.dot(translation, obj_poses[0])
         sample_label = 'on_floor'
@@ -288,9 +292,9 @@ class TrimeshRearrangeScene(object):
 
         return colliding
 
-    def random_arrangement(self, objects, combo_objects, num_obj_discarded=0, num_combo_discarded=0):
+    def random_arrangement(self, min, objects, combo_objects, num_obj_discarded=0, num_combo_discarded=0):
         # clear objects
-        assert len(objects) + 2 * len(combo_objects) <= self._max_num_spawned_objs
+        # assert len(objects) + 2 * len(combo_objects) <= self._max_num_spawned_objs
         assert num_obj_discarded <= len(objects) and num_combo_discarded <= len(combo_objects)
         self.remove_objects()
 
@@ -329,27 +333,54 @@ class TrimeshRearrangeScene(object):
 
         # sample discarded object on_floor
         discarded_indices = np.random.choice(range(len(objects)), size=(num_obj_discarded,), replace=False)
+        discarded_ids = set(id(objects[i]) for i in discarded_indices)
 
-        for i, obj in enumerate(objects):
-            n_obj = {}
-            for k, v in obj.items():
-                n_obj[k] = v
-            obj_mesh = obj['mesh']
-            obj_name = obj['name']
-            obj_poses = obj['stable_poses']
+        remaining_objects = list(objects)
+        num = 0
+        failed_attempts = 0
 
-            success = False
-            if i not in discarded_indices:
-                success, placement_T, label = self.find_object_placement(i, obj_mesh, obj_poses, max_iter=100)
+        while num < min and len(remaining_objects) > 0 and failed_attempts < 100:
+            for i, obj in enumerate(list(remaining_objects)):
+                n_obj = {}
+                for k, v in obj.items():
+                    n_obj[k] = v
+                obj_mesh = obj['mesh']
+                obj_name = obj['name']
+                obj_poses = obj['stable_poses']
 
-            if not success:
-                success, placement_T, label = self.discard_object_placement(i + len(combo_objects), obj_poses)
-                print("Couldn't place object", f'obj_{obj_name}_{i}', "!")
+                success = False
+                if id(obj) not in discarded_ids:
+                    success, placement_T, label = self.find_object_placement(i, obj_mesh, obj_poses, max_iter=100)
+                
+                if success:
+                    # print("Placed object", f'{obj_name}')
+                    
+                    self.add_object(f'obj_{obj_name}_{i}', obj_name, obj_mesh, placement_T)
+                    n_obj['placement_pose'] = placement_T.copy()
+                    n_obj['placement_label'] = label
 
-            self.add_object(f'obj_{obj_name}_{i}', obj_name, obj_mesh, placement_T)
-            n_obj['placement_pose'] = placement_T.copy()
-            n_obj['placement_label'] = label
-            n_objects.append(n_obj)
+                    # 성공 순서에 따라 name 초기화
+                    n_obj['name'] = f'obj_{num}'
+
+                    n_objects.append(n_obj)
+                    num += 1
+                    print("Placed object", n_obj['name'])
+
+                    if obj in remaining_objects:
+                        remaining_objects.remove(obj)
+                    
+
+                elif not success:
+                    # success, placement_T, label = self.discard_object_placement(i + len(combo_objects), obj_poses)
+                    failed_attempts += 1
+                    print("Couldn't place object", obj["file"])
+                # self.add_object(f'obj_{obj_name}_{i}', obj_name, obj_mesh, placement_T)
+                # n_obj['placement_pose'] = placement_T.copy()
+                # n_obj['placement_label'] = label
+                # n_objects.append(n_obj)
+
+        if isinstance(objects, list):
+            objects[:] = remaining_objects
 
         return n_combos, n_objects
 
@@ -461,15 +492,80 @@ class TrimeshRearrangeScene(object):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--test-mode', choices=['bench', 'pose'], default='pose')
+    # parser.add_argument('--test-mode', choices=['bench', 'pose'], default='pose')
+    parser.add_argument('--test-mode', choices=['benchmark', 'ws'], default='benchmark')
     args = parser.parse_args()
 
-    objects = sample_random_objects(5)
-    scene = sample_random_scene()
+    test_mode = args.test_mode
+    
+    # Get ASSET_PATH from environment variable
+    ASSET_PATH = os.environ.get("ASSET_PATH", "")
+    
+    # Hardcoded scene types
+    scene_types = [
+        # "CellShelfDeskSceneFactory",
+        # "DeskSceneFactory",
+        # "DeskWallSceneFactory",
+        "DoubleDoorCabinetSceneFactory",
+        # "DrawerSceneFactory",
+        # "DrawerShelfSceneFactory",
+        # "EketShelfSceneFactory",
+        # "LargeShelfDeskSceneFactory",
+        # "LargeShelfSceneFactory",
+        # "LayerShelfSceneFactory",
+        # "RoundTableSceneFactory",
+        # "SingleDoorCabinetDeskSceneFactory",
+        # "TriangleShelfDeskSceneFactory"
+    ]
+    scene_type = np.random.choice(scene_types)
 
-    scene = TrimeshRearrangeScene(scene['meshes'], scene['support'])
-    scene.random_arrangement(objects)
-    scene.as_trimesh_scene().show()
-    scene.random_arrangement(objects)
-    scene.as_trimesh_scene().show()
+    # Dynamically find scene indices from filesystem
+    scene_dir = os.path.join(ASSET_PATH, "benchmark_scenes", scene_type, "assets")
+    scene_folders = glob.glob(os.path.join(scene_dir, "*"))
+    scene_folders = [f for f in scene_folders if os.path.isdir(f)]
+    
+    # Extract trailing numbers from folder names
+    scene_indices = []
+    for folder in scene_folders:
+        folder_name = os.path.basename(folder)
+        # Extract trailing digits (last sequence of digits in the folder name)
+        match = re.search(r'(\d+)$', folder_name)
+        if match:
+            scene_indices.append(int(match.group(1)))
+    
+    # Randomly select a scene index
+    if scene_indices:
+        scene_idx = np.random.choice(scene_indices)
+    else:
+        print(f"Warning: No scene folders found in {scene_dir}, defaulting to scene_idx=0")
+        scene_idx = 0
+
+    objects = sample_random_objects(15, mode=test_mode)
+    scene = sample_random_scene(scene_type, scene_idx, mode=test_mode)
+
+    scene = TrimeshRearrangeScene(scene['meshes'], scene['support'], scene['robot_cam_config'])
+
+    while True:
+
+        start_time = time.time()
+        n_combos, n_objects = scene.random_arrangement(20, objects=objects, combo_objects=[])
+        elapsed_time = time.time() - start_time
+        
+        print("〓"*30)
+        print(f"Successfully placed objects (took {elapsed_time:.2f} seconds)")
+        print("〓"*30)
+
+        scene.as_trimesh_scene().show()
+
+
+        try:
+            ans = input("Press 'Enter' to iterate, or 'q' to quit: ")
+        except KeyboardInterrupt:
+            break
+
+        if ans.lower().strip() == 'q':
+            break
+
+
+
 
