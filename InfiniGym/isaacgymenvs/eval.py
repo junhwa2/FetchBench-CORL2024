@@ -1,3 +1,5 @@
+# python isaacgymenvs/eval.py task=FetchMeshCurobo scene=benchmark_eval/RigidObjDesk_0
+# python isaacgymenvs/eval.py task=FetchMeshCuroboPtdCGNBeta scene=benchmark_eval/RigidObjDesk_0
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
@@ -15,6 +17,8 @@ import isaacgymenvs
 import imageio.v3 as iio
 import numpy as np
 
+from isaacgymenvs.utils.hj_utils import npy_to_csv
+
 
 def log_videos(path, idx, videos, fps=10):
     if not os.path.exists(f'{path}'):
@@ -22,6 +26,12 @@ def log_videos(path, idx, videos, fps=10):
 
     iio.imwrite(f'{path}/log_{idx}.mp4', np.stack(videos, axis=0), fps=fps)
 
+def log_first_frame(path, idx, videos):
+    if not os.path.exists(f'{path}'):
+        os.makedirs(f'{path}')
+
+    first_frame = np.asarray(videos[0])
+    iio.imwrite(f"{path}/log_{idx}.png", first_frame)
 
 def log_results(path, results):
     count, success = 0, 0
@@ -46,14 +56,16 @@ def log_results(path, results):
     print("Success Rate: ", success / count)
 
     np.save(f'{path}/result.npy', log)
-
+    
+    #### Added by HJ
+    npy_to_csv(f'{path}/result.npy', f'{path}/result.csv')
 
 @hydra.main(version_base="1.1", config_name="config", config_path="./config")
 def launch_eval_hydra(cfg: DictConfig):
     time_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
     cfg_dict = omegaconf_to_dict(cfg)
-    print_dict(cfg_dict)
+    # print_dict(cfg_dict)
 
     experiment_name = f'{cfg.scene.name}_{cfg.task.name}_{cfg.task.prefix}_{time_str}'
     experiment_dir = os.path.join('runs', experiment_name)
@@ -102,6 +114,7 @@ def launch_eval_hydra(cfg: DictConfig):
     results, logs = [], []
     for i in range(cfg.scene.num_tasks):
         vec_env.reset_task(i)
+        # input("solve?")
         rgb, log = vec_env.solve()
         res = vec_env.eval()
 
@@ -109,6 +122,7 @@ def launch_eval_hydra(cfg: DictConfig):
         results.append(res)
 
         log_videos(f'./videos/{experiment_name}', i, rgb, fps=24)
+        # log_first_frame(f'./scene_images/{experiment_name}', i, rgb)
 
     # Log Results
     log_results(f'./runs/{experiment_name}', results)

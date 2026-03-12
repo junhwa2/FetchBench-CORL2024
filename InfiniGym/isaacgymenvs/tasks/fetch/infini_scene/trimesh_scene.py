@@ -20,7 +20,7 @@ COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
 IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 """
-
+# python isaacgymenvs/tasks/fetch/infini_scene/trimesh_scene.py
 
 import argparse
 import trimesh
@@ -445,7 +445,7 @@ class TrimeshRearrangeScene(object):
 
         # Vis bounding region
         bounding_region = trimesh.creation.box(bounds=self._support_robot_cam_config['support_bounds'])
-        bounding_region.visual.face_colors = [0, 0, 0, 100]
+        bounding_region.visual.face_colors = [100, 0, 0, 100]
         trimesh_scene.add_geometry(bounding_region)
 
         # Add two plane as floor and axis
@@ -454,22 +454,28 @@ class TrimeshRearrangeScene(object):
         plane.visual.face_colors = [0, 0, 0, 100]
         axis = trimesh.creation.axis()
         trimesh_scene.add_geometry(plane)
-        trimesh_scene.add_geometry(axis)
+        # trimesh_scene.add_geometry(axis)
 
         return trimesh_scene
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--test-mode', choices=['bench', 'pose'], default='pose')
+    # parser.add_argument('--test-mode', choices=['bench', 'pose'], default='pose')
+    parser.add_argument('--test-mode', choices=['benchmark', 'ws'], default='benchmark')
     args = parser.parse_args()
 
-    objects = sample_random_objects(5)
-    scene = sample_random_scene()
+    test_mode = args.test_mode
+    scene_type = "LargeShelfDeskSceneFactory" # "SingleDoorCabinetDeskSceneFactory" #"TriangleShelfDeskSceneFactory" # "DrawerShelfSceneFactory" ### should be random
+    scene_idx = 17 ### should be random
+    
+    objects = sample_random_objects(7, mode=test_mode)
+    scene = sample_random_scene(scene_type, scene_idx, mode=test_mode)
+    print("scene['support']:", scene['support'])
 
-    scene = TrimeshRearrangeScene(scene['meshes'], scene['support'])
-    scene.random_arrangement(objects)
+    scene = TrimeshRearrangeScene(scene['meshes'], scene['support'], scene['robot_cam_config'])
+    scene.random_arrangement(objects, [])
     scene.as_trimesh_scene().show()
-    scene.random_arrangement(objects)
+    scene.random_arrangement(objects, [])
     scene.as_trimesh_scene().show()
 

@@ -1,11 +1,12 @@
 
 import numpy as np
 import os
-import torch
+# import torch
 import imageio
 import trimesh.transformations as tra
 
 from isaacgym import gymutil, gymtorch, gymapi
+import torch
 from isaacgymenvs.utils.torch_jit_utils import to_torch, get_axis_params, tensor_clamp, \
     tf_vector, tf_combine, quat_mul, quat_conjugate, quat_apply, quat_to_angle_axis, tf_inverse, matrix_to_quaternion
 from isaacgymenvs.tasks.fetch.vec_task import VecTask
@@ -51,8 +52,8 @@ class FetchBase(VecTask):
         self.states = {}                          # will be dict filled with relevant states to use for reward calculation
         self.robot_handles = {}                   # will be dict mapping names to relevant sim handles
         self.num_robot_dofs = None                # Total number of DOFs per env
-        self.num_objs = self.cfg["env"]["numObjs"]
-
+        # self.num_objs = self.cfg["env"]["numObjs"]
+        self.num_objs = None        
         # Tensor placeholders
         self._root_state = None             # State of root body        (n_envs, 13)
         self._dof_state = None              # Joint velocities          (n_envs, n_dof)
@@ -637,6 +638,7 @@ class FetchBase(VecTask):
                 self.gym.end_aggregate(env_ptr)
 
             # Store the created env pointers
+            self.num_objs = len(object_actors)
             assert len(object_actors) == self.num_objs == len(loader.object_labels[0]) == len(object_ref_points)
             self.envs.append(env_ptr)
             self.robots.append(robot_actor)

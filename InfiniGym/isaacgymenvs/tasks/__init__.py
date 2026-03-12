@@ -36,6 +36,35 @@ isaacgym_task_map = {
 
 
 try:
+    # Contact_Graspnet_Pytorch
+    from .fetch.fetch_mesh_curobo_cgn_beta import FetchMeshCuroboPtdCGNBeta
+
+    isaacgym_task_map = {
+        "FetchBase": FetchBase,
+        "FetchPointCloudBase": FetchPointCloudBase,
+
+        "FetchNaive": FetchNaive,
+        "FetchMeshCurobo": FetchMeshCurobo,
+        "FetchMeshCuroboRep": FetchMeshCuroboRep,
+
+        "FetchPtdCurobo": FetchPtdCurobo,
+        "FetchPtdCuroboRep": FetchPtdCuroboRep,
+
+        "FetchCuroboDataGen": FetchCuroboDataGen,
+
+        "FetchPtdImitE2E": FetchPtdImitE2E,
+        "FetchPtdImitTwoStage": FetchPtdImitTwoStage,
+        "FetchPtdImitCuroboCGN": FetchPtdImitCuroboCGN,
+        
+        "FetchMeshCuroboPtdCGNBeta": FetchMeshCuroboPtdCGNBeta,
+    }
+
+except:
+    print("============================================================")
+    print("Import Error: Additional Method Excluded.")
+
+
+try:
     # OMPL
     from .fetch.fetch_mesh_pyompl import FetchMeshPyompl
     from .fetch.repeat.fetch_mesh_pyompl_rep import FetchMeshPyomplRep
@@ -91,7 +120,7 @@ try:
         "FetchPtdImitCuroboCGN": FetchPtdImitCuroboCGN
     }
 
-except:
+except Exception as e:    # 모든 예외의 에러 메시지를 출력할 때는 Exception을 사용
     print("============================================================")
-    print("Import Error: Additional Method Excluded.")
+    print("Import Error: Additional Method Excluded.", e)
 

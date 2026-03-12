@@ -24,7 +24,7 @@ env:
   episodeLength: 150
   enableDebugVis: False
 
-  numObjs: 15
+  # numObjs: 15
   numTasks: null
   randomGoalIndex: False
 

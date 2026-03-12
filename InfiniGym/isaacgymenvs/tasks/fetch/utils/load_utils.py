@@ -104,6 +104,11 @@ Object Assets
 
 def load_object_asset(obj_path):
     mesh = trimesh.load_mesh(f'{obj_path}/mesh.obj')
+    if isinstance(mesh, trimesh.Scene):
+        mesh = trimesh.util.concatenate([g for g in mesh.geometry.values()]) # 
+    elif isinstance(mesh, (list, tuple)):
+    # if not isinstance(mesh, trimesh.Trimesh):
+        mesh = trimesh.util.concatenate(mesh)
     assert isinstance(mesh, trimesh.Trimesh)
     stable_poses = np.load(f'{obj_path}/stable_poses.npy')
 

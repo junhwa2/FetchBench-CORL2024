@@ -10,3 +10,9 @@ InfiniGym/runs
 InfiniGym/logs
 InfiniGym/videos
 
+# HJ added
+asset_release
+asset_release_v1
+InfiniGym/images
+scripts
+*.sh
