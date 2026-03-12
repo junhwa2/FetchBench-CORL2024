@@ -16,6 +16,9 @@ from .fetch.imit.fetch_ptd_imit_e2e import FetchPtdImitE2E
 from .fetch.imit.fetch_ptd_imit_two_stage import FetchPtdImitTwoStage
 from .fetch.imit.fetch_ptd_imit_curobo_cgn import FetchPtdImitCuroboCGN
 
+# GO
+from .fetch.fetch_mesh_curobo_go import FetchMeshCuroboGO
+
 isaacgym_task_map = {
     "FetchBase": FetchBase,
     "FetchPointCloudBase": FetchPointCloudBase,
@@ -31,7 +34,9 @@ isaacgym_task_map = {
 
     "FetchPtdImitE2E": FetchPtdImitE2E,
     "FetchPtdImitTwoStage": FetchPtdImitTwoStage,
-    "FetchPtdImitCuroboCGN": FetchPtdImitCuroboCGN
+    "FetchPtdImitCuroboCGN": FetchPtdImitCuroboCGN,
+    
+    "FetchMeshCuroboGO": FetchMeshCuroboGO,
 }
 
 
@@ -57,6 +62,8 @@ try:
         "FetchPtdImitCuroboCGN": FetchPtdImitCuroboCGN,
         
         "FetchMeshCuroboPtdCGNBeta": FetchMeshCuroboPtdCGNBeta,
+        
+        "FetchMeshCuroboGO": FetchMeshCuroboGO,
     }
 
 except:
@@ -117,7 +124,9 @@ try:
 
         "FetchPtdImitE2E": FetchPtdImitE2E,
         "FetchPtdImitTwoStage": FetchPtdImitTwoStage,
-        "FetchPtdImitCuroboCGN": FetchPtdImitCuroboCGN
+        "FetchPtdImitCuroboCGN": FetchPtdImitCuroboCGN,
+        
+        "FetchMeshCuroboGO": FetchMeshCuroboGO,
     }
 
 except Exception as e:    # 모든 예외의 에러 메시지를 출력할 때는 Exception을 사용
