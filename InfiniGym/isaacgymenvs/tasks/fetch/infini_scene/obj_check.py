@@ -23,6 +23,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 
 import argparse
+import isaacgym
 import trimesh
 import trimesh.transformations as tra
 import numpy as np
@@ -33,7 +34,7 @@ import os
 import time
 import glob
 import re
-from collections import deque
+import pandas as pd
 
 
 def apply_T(pts, T):
@@ -339,10 +340,11 @@ class TrimeshRearrangeScene(object):
         remaining_objects = list(objects)
         num = 0
         failed_attempts = 0
-        print("discarded_ids:", len(discarded_ids), discarded_ids)
+        
+        # remaining_objects 개수가 min보다 적으면, min을 그에 맞게 조정
+        min_count = len(remaining_objects) if len(remaining_objects) < min else min
 
-        while num < min and len(remaining_objects) > 0 and failed_attempts < 100:
-            print("\n>>>>>>>>>>>", len(remaining_objects))
+        while num < min_count and len(remaining_objects) > 0 and failed_attempts < 10:
             for i, obj in enumerate(list(remaining_objects)):
                 n_obj = {}
                 for k, v in obj.items():
@@ -352,10 +354,9 @@ class TrimeshRearrangeScene(object):
                 obj_poses = obj['stable_poses']
 
                 success = False
-                if obj not in discarded_ids:
+                if id(obj) not in discarded_ids:
                     success, placement_T, label = self.find_object_placement(i, obj_mesh, obj_poses, max_iter=100)
-                else:
-                    print("\tobj in discarded_ids:", id(obj), success)
+                
                 if success:
                     # print("Placed object", f'{obj_name}')
                     
@@ -368,16 +369,19 @@ class TrimeshRearrangeScene(object):
 
                     n_objects.append(n_obj)
                     num += 1
-                    print("Placed object", n_obj['name'], "→", n_obj['file'], n_obj["mesh"].bounding_box.extents)
+                    print("Placed object", n_obj['name'])
 
                     if obj in remaining_objects:
                         remaining_objects.remove(obj)
+
+                    if num >= min:
+                        break
                     
 
                 elif not success:
                     # success, placement_T, label = self.discard_object_placement(i + len(combo_objects), obj_poses)
                     failed_attempts += 1
-                    print("Couldn't place object", obj["file"], obj["mesh"].bounding_box.extents, "!")
+                    print("Couldn't place object", obj["file"])
                 # self.add_object(f'obj_{obj_name}_{i}', obj_name, obj_mesh, placement_T)
                 # n_obj['placement_pose'] = placement_T.copy()
                 # n_obj['placement_label'] = label
@@ -385,96 +389,6 @@ class TrimeshRearrangeScene(object):
 
         if isinstance(objects, list):
             objects[:] = remaining_objects
-
-        return n_combos, n_objects
-
-
-
-    def random_arrangement_JH(self, min, objects, combo_objects):
-        # clear objects
-        # assert len(objects) + 2 * len(combo_objects) <= self._max_num_spawned_objs
-        self.remove_objects()
-
-        # deepcopy
-        n_objects, n_combos = [], []
-
-        # numObjs 중 numSceneObjs개를 random하게 선택, 크기순으로 sort
-        if len(objects) <= min:
-            raise ValueError("numSceneObjs > numObjs.")
-        else:
-            selected_idx = np.random.choice(len(objects), size=min, replace=False)
-            remaining_objects = [objects[i] for i in selected_idx]
-            # Sort remaining objects by size (descending)
-            remaining_objects.sort(key=lambda x: x['mesh'].bounding_box.extents[0] * x['mesh'].bounding_box.extents[1] * x['mesh'].bounding_box.extents[2], reverse=True)
-            # print("*"*30)
-            # print(remaining_objects[0]['mesh'].bounding_box.extents)
-            # for obj in remaining_objects:
-            #     obj_stable_poses = obj['stable_poses']
-            #     stable_pose = self.sample_random_stable_pose(obj_stable_poses)
-                
-        queue = deque(remaining_objects)
-        num = 0
-
-        for _ in range(100):
-            if num >= min or len(queue) == 0:
-                break
-
-            obj = queue.popleft()
-            n_obj = {k: v for k, v in obj.items()}
-            obj_mesh = obj['mesh']
-            obj_name = obj['name']
-            obj_poses = obj['stable_poses']
-
-            success, placement_T, label = self.find_object_placement(num, obj_mesh, obj_poses, max_iter=100)
-
-            if success:
-                self.add_object(f'obj_{obj_name}_{num}', obj_name, obj_mesh, placement_T)
-                n_obj['placement_pose'] = placement_T.copy()
-                n_obj['placement_label'] = label
-                # 성공 순서에 따라 name 초기화
-                n_obj['name'] = f'obj_{num}'
-                n_objects.append(n_obj)
-                num += 1
-                print("Placed object", n_obj['name'], "→", n_obj['file'])
-            else:
-                print("Couldn't place object", obj["file"], "!")
-                queue.append(obj)  # 재시도 위해 뒤로 보냄
-
-        # while num < min and len(remaining_objects) > 0 and failed_attempts < 100:
-        #     for i, obj in enumerate(list(remaining_objects)):
-        #         if num >= min:
-        #             break
-        #         if failed_attempts >= 100:
-        #             break
-        #         n_obj = {}
-        #         for k, v in obj.items():
-        #             n_obj[k] = v
-        #         obj_mesh = obj['mesh']
-        #         obj_name = obj['name']
-        #         obj_poses = obj['stable_poses']
-
-        #         success = False
-        #         success, placement_T, label = self.find_object_placement(i, obj_mesh, obj_poses, max_iter=100)
-                
-        #         if success:
-        #             self.add_object(f'obj_{obj_name}_{i}', obj_name, obj_mesh, placement_T)
-        #             n_obj['placement_pose'] = placement_T.copy()
-        #             n_obj['placement_label'] = label
-
-        #             # 성공 순서에 따라 name 초기화
-        #             n_obj['name'] = f'obj_{num}'
-
-        #             n_objects.append(n_obj)
-        #             num += 1
-        #             print("Placed object", n_obj['name'], "→", n_obj['file'])
-
-        #             if obj in remaining_objects:
-        #                 remaining_objects.remove(obj)
-
-        #         elif not success:
-        #             print("Couldn't place object", obj["file"], "!")
-        #             failed_attempts += 1
-        #             # print("failed_attempts: ", failed_attempts)
 
         return n_combos, n_objects
 
@@ -561,6 +475,7 @@ class TrimeshRearrangeScene(object):
     def as_trimesh_scene(self):
         trimesh_scene = trimesh.scene.Scene()
         for obj_id, obj in self._objects.items():
+            print("Adding object to scene:", obj_id)
             trimesh_scene.add_geometry(obj['mesh'], node_name=obj_id,
                                        geom_name=obj_id, transform=obj['pose'])
 
@@ -584,6 +499,57 @@ class TrimeshRearrangeScene(object):
         return trimesh_scene
 
 
+def mark_metadata_flags(n_objects, mark_remove=False):
+    metadata_path = os.path.join(ASSET_PATH, 'benchmark_objects', 'metadata.csv')
+    target_paths = set()
+    for obj in n_objects:
+        obj_file = str(obj.get('file', '')).replace('\\', '/')
+        if '/benchmark_objects/' in obj_file:
+            rel = obj_file.split('/benchmark_objects/', 1)[1]
+        else:
+            continue
+
+        if rel.endswith('/mesh.obj'):
+            rel = rel[:-len('/mesh.obj')]
+        parts = rel.split('/')
+        if len(parts) >= 2:
+            target_paths.add(f"{parts[0]}/{parts[1]}")
+
+    if not target_paths:
+        print("Warning: no object paths found to update metadata.")
+        return
+
+    metadata = pd.read_csv(metadata_path)
+
+    if 'remove' not in metadata.columns:
+        if 'use_eval' in metadata.columns:
+            metadata.insert(metadata.columns.get_loc('use_eval') + 1, 'remove', '')
+        else:
+            metadata['remove'] = ''
+    elif 'use_eval' in metadata.columns:
+        remove_col = metadata.pop('remove')
+        metadata.insert(metadata.columns.get_loc('use_eval') + 1, 'remove', remove_col)
+
+    if 'check' not in metadata.columns:
+        if 'stable_pose' in metadata.columns:
+            metadata.insert(metadata.columns.get_loc('stable_pose') + 1, 'check', '')
+        elif 'remove' in metadata.columns:
+            metadata.insert(metadata.columns.get_loc('remove') + 1, 'check', '')
+        else:
+            metadata['check'] = ''
+    elif 'stable_pose' in metadata.columns:
+        check_col = metadata.pop('check')
+        metadata.insert(metadata.columns.get_loc('stable_pose') + 1, 'check', check_col)
+
+    mask = metadata['Path'].astype(str).isin(target_paths)
+    metadata.loc[mask, 'check'] = 'c'
+    if mark_remove:
+        metadata.loc[mask, 'remove'] = 'r'
+
+    metadata.to_csv(metadata_path, index=False)
+
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     # parser.add_argument('--test-mode', choices=['bench', 'pose'], default='pose')
@@ -598,9 +564,9 @@ if __name__ == "__main__":
     # Hardcoded scene types
     scene_types = [
         # "CellShelfDeskSceneFactory",
-        # "DeskSceneFactory",
+        "DeskSceneFactory",
         # "DeskWallSceneFactory",
-        "DoubleDoorCabinetSceneFactory",
+        # "DoubleDoorCabinetSceneFactory",
         # "DrawerSceneFactory",
         # "DrawerShelfSceneFactory",
         # "EketShelfSceneFactory",
@@ -634,7 +600,9 @@ if __name__ == "__main__":
         print(f"Warning: No scene folders found in {scene_dir}, defaulting to scene_idx=0")
         scene_idx = 0
 
-    objects = sample_random_objects(15, mode=test_mode)
+    scene_idx = 3
+
+    objects = sample_random_objects(12, mode=test_mode)
     scene = sample_random_scene(scene_type, scene_idx, mode=test_mode)
 
     scene = TrimeshRearrangeScene(scene['meshes'], scene['support'], scene['robot_cam_config'])
@@ -642,23 +610,44 @@ if __name__ == "__main__":
     while True:
 
         start_time = time.time()
-        n_combos, n_objects = scene.random_arrangement(5, objects=objects, combo_objects=[])
+        n_combos, n_objects = scene.random_arrangement(10, objects=objects, combo_objects=[])
         elapsed_time = time.time() - start_time
         
-        print("〓"*30)
-        print(f"Successfully placed objects (took {elapsed_time:.2f} seconds)")
-        print("〓"*30)
+        if len(n_objects) == 0:
+            print("there are no objects")
+            exit()
 
+        print("================ Object Placement Finished ================")
+        print(f"Successfully placed objects (took {elapsed_time:.2f} seconds)")
+
+        for obj in n_objects:
+            obj_file = str(obj.get('file', '')).replace('\\', '/')
+            if '/benchmark_objects/' in obj_file:
+                rel = obj_file.split('/benchmark_objects/', 1)[1]
+            else:
+                continue
+
+            if rel.endswith('/mesh.obj'):
+                rel = rel[:-len('/mesh.obj')]
+        print("\t", rel)
+        print("the number of items left: ", len(objects))
         scene.as_trimesh_scene().show()
 
-
         try:
-            ans = input("Press 'Enter' to iterate, or 'q' to quit: ")
+            # ans = input("\nPress 'Enter' to iterate, or 'q' to quit: ")
+            ans = input("\nPress 'r' to remove, or 'enter' to next: ")
+
+
+
         except KeyboardInterrupt:
             break
 
-        if ans.lower().strip() == 'q':
-            break
+        ans_clean = ans.lower().strip()
+        if ans_clean == 'r':
+            mark_metadata_flags(n_objects, mark_remove=True)
+        elif ans_clean == '':
+            mark_metadata_flags(n_objects, mark_remove=False)
+
 
 
 

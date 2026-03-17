@@ -58,7 +58,8 @@ def generate_scenes(cfg: DictConfig):
     # Get output path
     asset_path = os.environ.get("ASSET_PATH", "../../asset_release")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = os.path.join(asset_path, "Task", f"generated_{timestamp}")
+    scene_category = cfg.task.env.sceneCategory
+    output_dir = os.path.join(asset_path, "Task", scene_category, f"generated_{timestamp}")
     
     # Override scene config path for InfiniScene BEFORE converting to dict
     cfg.task.sceneConfigPath = output_dir
@@ -90,8 +91,8 @@ def generate_scenes(cfg: DictConfig):
     # If arrangement generation failed during env creation, abort this attempt
     if getattr(scene_gen, "_arrangement_failed", False):
         print("✗ Arrangement failed during environment creation — skipping this attempt")
-        if hasattr(scene_gen, "destroy_env"):
-            scene_gen.destroy_env()
+        # if hasattr(scene_gen, "destroy_env"):
+        #     scene_gen.destroy_env()
         # Exit non-zero so caller (subprocess runner) knows this attempt failed
         sys.exit(1)
     
@@ -166,8 +167,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate scenes multiple times")
     parser.add_argument("--num", "-n", type=int, default=1,
                         help="Number of times to generate the dataset")
-    parser.add_argument("--max-attempts", type=int, default=None,
-                        help="Maximum total attempts. Defaults to --num (no extra retries).")
+    parser.add_argument("--child-attempt", action="store_true",
+                        help="Internal flag: run exactly one generation attempt in this process")
     args, remaining_argv = parser.parse_known_args()
 
     # Check ASSET_PATH
@@ -176,33 +177,28 @@ if __name__ == "__main__":
         print("Set it with: export ASSET_PATH=/path/to/FetchBench-CORL2024/asset_release")
         os.environ["ASSET_PATH"] = os.path.abspath("../asset_release")
 
-    # Remove our parsed args from sys.argv so Hydra doesn't see them
-    sys.argv[:] = [sys.argv[0]] + remaining_argv
+    # Child mode: perform one hydra run in this process.
+    if args.child_attempt:
+        sys.argv[:] = [sys.argv[0]] + remaining_argv
+        generate_scenes()
+        sys.exit(0)
 
-    # Run generation until target success count is reached or attempts are exhausted.
+    # Parent mode: run each attempt in a fresh subprocess to avoid
+    # Isaac Gym / PhysX singleton re-initialization crashes.
     success_count = 0
     attempts = 0
-    max_attempts = args.max_attempts if args.max_attempts is not None else args.num
+    script_path = os.path.abspath(__file__)
 
-    while success_count < args.num and attempts < max_attempts:
+    while success_count < args.num:
         attempts += 1
         print(f"\n=== Attempt {attempts} (success {success_count}/{args.num}) ===\n")
-        # `generate_scenes` is decorated with `@hydra.main` and calls `sys.exit(code)`
-        # to indicate success/failure. Calling it directly may either return None
-        # or raise SystemExit. Handle both cases so `success_count` increments
-        # correctly and the loop can terminate when `args.num` is reached.
-        try:
-            ret = generate_scenes()
-            # If the function returns a truthy value, treat as success.
-            ok = bool(ret)
-        except SystemExit as e:
-            ok = (e.code == 0)
+
+        cmd = [sys.executable, script_path, "--num", "1", "--child-attempt", *remaining_argv]
+        result = subprocess.run(cmd, env=os.environ.copy())
+        ok = (result.returncode == 0)
+
         if ok:
             success_count += 1
-
-    if success_count < args.num:
-        print(f"Completed {success_count}/{args.num} successful generations in {attempts} attempts (max_attempts={max_attempts}).")
-        sys.exit(1)
 
     print(f"Completed {success_count}/{args.num} successful generations in {attempts} attempts.")
     sys.exit(0)

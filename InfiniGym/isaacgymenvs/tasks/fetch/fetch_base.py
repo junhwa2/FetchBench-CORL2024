@@ -558,7 +558,6 @@ class FetchBase(VecTask):
             self.gym.set_actor_dof_properties(env_ptr, robot_actor, robot_dof_props)
 
             table_actor = self.gym.create_actor(env_ptr, table_asset['asset'], table_start_pose, "table", n, 0, seg_idx)
-            print(f"[DEBUG] env {n}: create_actor table done", flush=True)
             seg_idx += 1
             self.gym.set_rigid_body_color(env_ptr, table_actor, 0, gymapi.MESH_VISUAL, gymapi.Vec3(0.0, 0.0, 0.0))
 
@@ -566,7 +565,6 @@ class FetchBase(VecTask):
                 self.gym.begin_aggregate(env_ptr, max_agg_bodies, max_agg_shapes, True)
 
             scene_actor = self.gym.create_actor(env_ptr, scene_asset['asset'], scene_start_pose, "scene", n, 0, seg_idx)
-            print(f"[DEBUG] env {n}: create_actor scene done", flush=True)
             seg_idx += 1
 
             if self.aggregate_mode == 1:
