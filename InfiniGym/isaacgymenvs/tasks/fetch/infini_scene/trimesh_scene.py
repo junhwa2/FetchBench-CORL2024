@@ -34,6 +34,7 @@ import time
 import glob
 import re
 from collections import deque
+import random
 
 
 def apply_T(pts, T):
@@ -143,7 +144,7 @@ class SupportSurface(object):
 
 
 class TrimeshRearrangeScene(object):
-    def __init__(self, support_meshes, support_annotations, support_robot_cam_config, spacing=2.5, **kwargs):
+    def __init__(self, support_meshes, support_annotations, support_robot_cam_config, _max_num_spawned_objs, spacing=2.5, **kwargs):
         """Create a scene object."""
         self._objects = {}
         self._supports = {}
@@ -151,7 +152,8 @@ class TrimeshRearrangeScene(object):
         self._scene_bounds = None
         self._support_surface = SupportSurface()
 
-        self._max_num_spawned_objs = kwargs.get('max_num_objs', 15)
+        # self._max_num_spawned_objs = kwargs.get('max_num_objs', 15)
+        self._max_num_spawned_objs = _max_num_spawned_objs
         self._distance_above_support = kwargs.get('dist_above_support', 0.005)  # distance at which objects will be sampled
         self._erosion_ratio = kwargs.get('buffer_ratio', 0.2)  # distance to the edge of the polygon
         self._label_prob = kwargs.get('label_probs', {'in_basket': 0.5, 'on_shelf': 0.3, 'on_table': 0.2,
@@ -180,7 +182,7 @@ class TrimeshRearrangeScene(object):
         self._objects[obj_id] = {'name': obj_name, 'mesh': obj_mesh, 'pose': pose}
         self.collision_manager.add_object(name=obj_id, mesh=obj_mesh, transform=pose)
 
-    def find_object_placement(self, i, obj_mesh, obj_poses, max_iter=1):
+    def find_object_placement(self, obj_mesh, obj_poses, max_iter=1):
         iter, valid, placement_T = 0, False, None
 
         sample_label = None
@@ -268,11 +270,19 @@ class TrimeshRearrangeScene(object):
         # create enough space for remaining objects
         assert self._scene_spacing * 2 >= 5.
         assert self._scene_bounds[0][0] + self._scene_spacing >= 1.
-
+        # _scene_spacing → envSpacing 75
+        # _max_num_spawned_objs → numObjs 
         dy = 2 * self._scene_spacing
-        ys = np.arange(-self._scene_spacing + 0.2, self._scene_spacing - 0.2, 0.3)
-        # x = - self._scene_spacing + 0.25
-        x = - 2.25
+        # print("*"*30)
+        # print(-self._scene_spacing*(self._max_num_spawned_objs-1)/2-self._scene_spacing)
+        # print(self._scene_spacing*(self._max_num_spawned_objs-1)/2+self._scene_spacing)
+        # print(self._scene_spacing)
+        # print(self._max_num_spawned_objs)
+        # ys = np.arange(-self._scene_spacing + 0.2, self._scene_spacing - 0.2, dy / (self._max_num_spawned_objs+1))
+        ys = np.arange(-self._scene_spacing*(self._max_num_spawned_objs-1)/2-self._scene_spacing, 
+                       self._scene_spacing*(self._max_num_spawned_objs-1)/2+self._scene_spacing, 
+                       self._scene_spacing)
+        x = - self._scene_spacing + 0.25
         translation = tra.translation_matrix(np.array([x, ys[i], self._distance_above_support]))
         placement_T = np.dot(translation, obj_poses[0])
         sample_label = 'on_floor'
@@ -353,7 +363,7 @@ class TrimeshRearrangeScene(object):
 
                 success = False
                 if obj not in discarded_ids:
-                    success, placement_T, label = self.find_object_placement(i, obj_mesh, obj_poses, max_iter=100)
+                    success, placement_T, label = self.find_object_placement(obj_mesh, obj_poses, max_iter=100)
                 else:
                     print("\tobj in discarded_ids:", id(obj), success)
                 if success:
@@ -388,94 +398,88 @@ class TrimeshRearrangeScene(object):
 
         return n_combos, n_objects
 
+    def random_arrangement_JH(self, numSceneObjs, objects, combo_objects):
+        n_combos = []
+        best_n_objects = []
+        best_num = 0
+        
+        # 4 1~3을 10번 반복하여 가장 많이 배치된 경우 선택
+        # 5
+        for trial in range(2):
+            print(f"─"*10,"Trial: ",{trial+1},"─"*10)
+            self.remove_objects()
+            
+            # 1. 물체 100개중 min개를 랜덤하게 선택
+            sampled_objects = random.sample(objects, k=numSceneObjs)
 
-
-    def random_arrangement_JH(self, min, objects, combo_objects):
-        # clear objects
-        # assert len(objects) + 2 * len(combo_objects) <= self._max_num_spawned_objs
-        self.remove_objects()
-
-        # deepcopy
-        n_objects, n_combos = [], []
-
-        # numObjs 중 numSceneObjs개를 random하게 선택, 크기순으로 sort
-        if len(objects) <= min:
-            raise ValueError("numSceneObjs > numObjs.")
-        else:
-            selected_idx = np.random.choice(len(objects), size=min, replace=False)
-            remaining_objects = [objects[i] for i in selected_idx]
-            # Sort remaining objects by size (descending)
-            remaining_objects.sort(key=lambda x: x['mesh'].bounding_box.extents[0] * x['mesh'].bounding_box.extents[1] * x['mesh'].bounding_box.extents[2], reverse=True)
-            # print("*"*30)
-            # print(remaining_objects[0]['mesh'].bounding_box.extents)
-            # for obj in remaining_objects:
-            #     obj_stable_poses = obj['stable_poses']
-            #     stable_pose = self.sample_random_stable_pose(obj_stable_poses)
-                
-        queue = deque(remaining_objects)
-        num = 0
-
-        for _ in range(100):
-            if num >= min or len(queue) == 0:
-                break
-
-            obj = queue.popleft()
-            n_obj = {k: v for k, v in obj.items()}
-            obj_mesh = obj['mesh']
-            obj_name = obj['name']
-            obj_poses = obj['stable_poses']
-
-            success, placement_T, label = self.find_object_placement(num, obj_mesh, obj_poses, max_iter=100)
-
-            if success:
-                self.add_object(f'obj_{obj_name}_{num}', obj_name, obj_mesh, placement_T)
+            count = 0
+            n_objects = []
+            # a. 선택되지 않은 물체 discard
+            discard_objects = [obj for obj in objects if obj not in sampled_objects]
+            for _, obj in enumerate(discard_objects):
+                n_obj = {}
+                for k, v in obj.items():
+                    n_obj[k] = v
+                obj_mesh = n_obj['mesh']
+                obj_name = n_obj['name']
+                obj_poses = n_obj['stable_poses']
+                success, placement_T, label = self.discard_object_placement(count, obj_poses)
+                n_obj['success'] = False
+                # false_count += 1
+                self.add_object(f'obj_{obj_name}_{count}', obj_name, obj_mesh, placement_T)
                 n_obj['placement_pose'] = placement_T.copy()
                 n_obj['placement_label'] = label
-                # 성공 순서에 따라 name 초기화
-                n_obj['name'] = f'obj_{num}'
                 n_objects.append(n_obj)
-                num += 1
-                print("Placed object", n_obj['name'], "→", n_obj['file'])
-            else:
-                print("Couldn't place object", obj["file"], "!")
-                queue.append(obj)  # 재시도 위해 뒤로 보냄
+                count += 1
 
-        # while num < min and len(remaining_objects) > 0 and failed_attempts < 100:
-        #     for i, obj in enumerate(list(remaining_objects)):
-        #         if num >= min:
-        #             break
-        #         if failed_attempts >= 100:
-        #             break
-        #         n_obj = {}
-        #         for k, v in obj.items():
-        #             n_obj[k] = v
-        #         obj_mesh = obj['mesh']
-        #         obj_name = obj['name']
-        #         obj_poses = obj['stable_poses']
+            # 2. 선택된 물체 중 min개 물체를 부피순으로 sort
+            remaining_objects = list(sampled_objects)
+            remaining_objects.sort(key=lambda x: x['mesh'].bounding_box.extents[0] * x['mesh'].bounding_box.extents[1] * x['mesh'].bounding_box.extents[2], reverse=True)
+            queue = deque(remaining_objects)
+            
+            num = 0
+            false_count = 0
 
-        #         success = False
-        #         success, placement_T, label = self.find_object_placement(i, obj_mesh, obj_poses, max_iter=100)
+            # 3 sort된 순서대로 이미 배치되어 있는 물체들과 충돌하지 않도록 물체 배치
+            while len(queue) > 0:
+                obj = queue.popleft()
+                n_obj = {k: v for k, v in obj.items()}
+                obj_mesh = obj['mesh']
+                obj_name = obj['name']
+                obj_poses = obj['stable_poses']
                 
-        #         if success:
-        #             self.add_object(f'obj_{obj_name}_{i}', obj_name, obj_mesh, placement_T)
-        #             n_obj['placement_pose'] = placement_T.copy()
-        #             n_obj['placement_label'] = label
+                success, placement_T, label = self.find_object_placement(obj_mesh, obj_poses, max_iter=100)
+                if success:
+                    # 성공 순서에 따라 name 초기화
+                    n_obj['success'] = f'obj_{num}'
+                    print(f"\t[Trial {trial+1}] Placed object num: {num}", "→", n_obj['file'])
+                    num += 1
+                else:
+                    # b. 충돌 물체 discard
+                    success, placement_T, label = self.discard_object_placement(false_count, obj_poses)
+                    n_obj['success'] = False
+                    false_count += 1
+                    print(f"\t[Trial {trial+1}] Couldn't place object", obj["file"])
 
-        #             # 성공 순서에 따라 name 초기화
-        #             n_obj['name'] = f'obj_{num}'
+                count += 1
+                self.add_object(f'obj_{obj_name}_{count}', obj_name, obj_mesh, placement_T)
+                n_obj['placement_pose'] = placement_T.copy()
+                n_obj['placement_label'] = label
+                n_objects.append(n_obj)
 
-        #             n_objects.append(n_obj)
-        #             num += 1
-        #             print("Placed object", n_obj['name'], "→", n_obj['file'])
-
-        #             if obj in remaining_objects:
-        #                 remaining_objects.remove(obj)
-
-        #         elif not success:
-        #             print("Couldn't place object", obj["file"], "!")
-        #             failed_attempts += 1
-        #             # print("failed_attempts: ", failed_attempts)
-
+            # 이 trial에서 배치된 개수가 최고라면 저장
+            if num > best_num:
+                best_num = num
+                best_n_objects = n_objects
+        
+        # 최종적으로 best 배치를 다시 한 번 scene에 복원
+        self.remove_objects()
+        n_objects = best_n_objects
+        print(f"\nBest num of placed objects: {best_num}")
+        name_order = [obj['name'] for obj in objects]
+        n_objects.sort(key=lambda x: name_order.index(x['name']))
+        for n_obj in n_objects:
+            self.add_object(f'obj_{n_obj["name"]}', n_obj['name'], n_obj['mesh'], n_obj['placement_pose'])
         return n_combos, n_objects
 
     def remove_objects(self):

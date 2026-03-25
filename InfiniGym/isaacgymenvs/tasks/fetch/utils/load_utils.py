@@ -4,6 +4,7 @@ import numpy as np
 import os
 import h5py
 import pandas as pd
+import random
 
 
 # Todo: Update this to be the asset path.
@@ -399,19 +400,26 @@ class InfiniSceneLoader(object):
         assert len(init_root_states) == len(init_obj_labels) == len(init_camera_poses)
 
         task_actor_states, task_obj_indices, task_obj_labels, task_camera_poses = [], [], [], []
+        obj_indices_, task_labels_ = [], []
         for k in range(len(init_root_states)):
             obj_indices, task_labels = self.get_obj_tasks(init_obj_labels[k])
-            for idx, label in zip(obj_indices, task_labels):
-                task_actor_states.append(init_root_states[k])
-                task_obj_indices.append(idx)
-                task_obj_labels.append(label)
-                task_camera_poses.append(init_camera_poses[k])
+            # target random하게 target obj 선택
+            i = random.randrange(len(obj_indices))
+            idx, label = obj_indices[i], task_labels[i]
 
+            task_actor_states.append(init_root_states[k])
+            task_obj_indices.append(idx)
+            task_obj_labels.append(label)
+            task_camera_poses.append(init_camera_poses[k])
+            obj_indices_.append(obj_indices)
+            task_labels_.append(task_labels)
         return {
             'task_init_state': task_actor_states,
             'task_obj_index': task_obj_indices,
             'task_obj_label': task_obj_labels,
-            'task_camera_pose': task_camera_poses
+            'task_camera_pose': task_camera_poses,
+            'task_cand_obj_index': obj_indices_, 
+            'task_cand_obj_label': task_labels_ 
         }
 
     def get_obj_tasks(self, obj_labels):
@@ -465,7 +473,6 @@ class InfiniSceneLoader(object):
             self.scene_pose = np.stack(self.scene_pose, axis=0)
         if isinstance(self.object_poses, list):
             self.object_poses = np.stack(self.object_poses, axis=0)
-
         root_state = \
             np.concatenate(
                 [self.robot_pose.reshape(-1, 2, 13), self.scene_pose.reshape(-1, 1, 13), self.object_poses], axis=1)

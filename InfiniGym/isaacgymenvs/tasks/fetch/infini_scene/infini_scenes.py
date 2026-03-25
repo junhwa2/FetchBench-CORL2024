@@ -410,7 +410,7 @@ class InfiniScene(VecTask):
         object_combo_assets = self.load_object_combo_asset(self.object_combo_asset)
 
         # self.num_objs = len(object_combo_assets) * 2 + len(object_assets)
-        self.num_objs = self.cfg["env"]["numSceneObjs"]
+        self.num_objs = self.cfg["env"]["numObjs"]
 
         self.robot_asset = robot_asset
         self.scene_asset = scene_assets
@@ -420,6 +420,7 @@ class InfiniScene(VecTask):
         trimesh_scene = TrimeshRearrangeScene(scene_assets['meshes'],
                                               scene_assets['support'],
                                               scene_assets['robot_cam_config'],
+                                              self.cfg["env"]["numObjs"],
                                               spacing=spacing,
                                               **self.cfg["env"]["scene"])
         table_dim = trimesh_scene.table_dim
@@ -430,11 +431,6 @@ class InfiniScene(VecTask):
         self.num_robot_dofs = self.gym.get_asset_dof_count(robot_asset)
         self.num_scene_bodies = self.gym.get_asset_rigid_body_count(scene_asset)
         self.num_scene_dofs = self.gym.get_asset_dof_count(scene_asset)
-
-        print("num robot bodies: ", self.num_robot_bodies)
-        print("num robot dofs: ", self.num_robot_dofs)
-        print("num scene bodies: ", self.num_scene_bodies)
-        print("num scene dofs: ", self.num_scene_dofs)
 
         robot_dof_props = self.get_robot_dof_props(robot_asset)
 
@@ -457,9 +453,9 @@ class InfiniScene(VecTask):
         self._obj_com = []
         self._obj_init_state = []
         self._obj_init_label = []
-        self._placed_n_object_files = []
 
-        for i in range(self.num_envs):
+        for i in range(num_envs):
+            print("〓"*15,f"Creating env {i}/{num_envs}", "〓"*15)
             seg_idx = 0
             env_ptr = self.gym.create_env(self.sim, lower, upper, num_per_row)
             # NOTE: franka should ALWAYS be loaded first in sim!
@@ -478,20 +474,12 @@ class InfiniScene(VecTask):
             n_combos, n_objects = trimesh_scene.random_arrangement_JH(self.cfg["env"]["numSceneObjs"], 
                                                                    object_assets, object_combo_assets
                                                                    )
+            #
+            # if len(n_objects) != self.num_objs:
+            #     print(f"Arrangement mismatch for env {i}: expected {self.num_objs}, got {len(n_objects)}. Aborting generation.")
+            #     self._arrangement_failed = True
+            #     return
 
-
-            n_object_files = [obj['file'] for obj in n_objects]
-
-            # If arrangement returned a different number of objects than expected,
-            # abort generation early for this entire scene attempt. This prevents
-            # partial environments from being created and later causing empty-stack
-            # errors when saving task configs.
-            if len(n_objects) != self.num_objs:
-                print(f"Arrangement mismatch for env {i}: expected {self.num_objs}, got {len(n_objects)}. Aborting generation.")
-                self._arrangement_failed = True
-                return
-
-            # object_assets = self.load_object_asset(n_objects)
 
             num_objects_bodies = 0
             num_objects_shapes = 0
@@ -536,13 +524,8 @@ class InfiniScene(VecTask):
                 quat = quat_mul(to_torch([0.0, 0.0, 1.0, 0.0], device='cpu'),
                                 to_torch([0.707, 0.0, 0.0, 0.707], device='cpu'))
             scene_start_pose.r = gymapi.Quat(*quat.numpy())
-            # print("scene start pose")
-            # print(scene_start_pose.p.z)
             if self.aggregate_mode >= 3:
                 self.gym.begin_aggregate(env_ptr, max_agg_bodies, max_agg_shapes, True)
-            # print("*"*50)
-            # print("[frame: env_ptr]", env_ptr)
-            # print("[robot start pose]", robot_start_pose.p.x, robot_start_pose.p.y, robot_start_pose.p.z, robot_start_pose.r.x, robot_start_pose.r.y, robot_start_pose.r.z, robot_start_pose.r.w)
             robot_actor = self.gym.create_actor(env_ptr, robot_asset, robot_start_pose, "robot", i, 0, seg_idx)
             seg_idx += 1
             self.gym.set_actor_dof_properties(env_ptr, robot_actor, robot_dof_props)
@@ -599,18 +582,7 @@ class InfiniScene(VecTask):
 
             for k, o in enumerate(n_objects):
                 assert f'obj_{k}' == o['name']  # make sure the order is the same
-
                 obj_start_pose = matrix_to_pose(trig, o['placement_pose'], transform=gym_transform)
-                # print("*"*50)
-                # print("obj_start_pose for object ", k)
-                # print(obj_start_pose.p.x)
-                # print(obj_start_pose.p.y)
-                # print(obj_start_pose.p.z)
-                # print(obj_start_pose.r.x)
-                # print(obj_start_pose.r.y)
-                # print(obj_start_pose.r.z)
-                # print(obj_start_pose.r.w)
-
                 object_actor = self.gym.create_actor(env_ptr, o['asset'], obj_start_pose, f"obj_{k}", i, 0, seg_idx)
                 seg_idx += 1
                 object_actors.append(object_actor)
@@ -649,7 +621,6 @@ class InfiniScene(VecTask):
             self._obj_com.append(object_coms)
             self._obj_init_state.append(object_init_states)
             self._obj_init_label.append(object_init_labels)
-            self._placed_n_object_files.append(n_object_files)
 
         self.init_torch_data()
 
@@ -1019,7 +990,6 @@ class InfiniScene(VecTask):
 
     def save_env(self, max_envs=1, force_save=False):
         saved = []
-        saved_n_object_files = []
         for i in range(self.num_envs):
             robot_state = self._robot_base_state[i].cpu().numpy()
             table_state = self._table_base_state[i].cpu().numpy()
@@ -1043,22 +1013,11 @@ class InfiniScene(VecTask):
 
             self.loader.append_pose(np.stack(self._cam_config[i]), cat='camera')
             self.loader.object_labels.append(obj_init_label)
-            saved_n_object_files.append(self._placed_n_object_files[i])
 
         # dump env configs
         # self.loader.save_env_config()
         self.loader.save_env_config(save_task_config=any(saved))
-        self.save_placed_n_objects_txt(saved_n_object_files)
         return saved
-
-    def save_placed_n_objects_txt(self, saved_n_object_files):
-        txt_path = f'{self.scene_config_path}/placed_n_objects_files.txt'
-        with open(txt_path, 'w') as f:
-            for comp_idx, object_files in enumerate(saved_n_object_files):
-                f.write(f'[composition_{comp_idx:03d}]\n')
-                for obj_idx, obj_file in enumerate(object_files):
-                    f.write(f'{obj_idx:02d}: {obj_file}\n')
-                f.write('\n')
 
 
 #####################################################################

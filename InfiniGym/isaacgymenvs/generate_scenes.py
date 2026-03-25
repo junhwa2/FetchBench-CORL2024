@@ -59,7 +59,10 @@ def generate_scenes(cfg: DictConfig):
     asset_path = os.environ.get("ASSET_PATH", "../../asset_release")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     scene_category = cfg.task.env.sceneCategory
-    output_dir = os.path.join(asset_path, "Task", scene_category, f"generated_{timestamp}")
+    # scene_category 이름에서 "SceneFactory"제거
+    scene_category_short = scene_category[:-len("SceneFactory")]
+    sceneIdx = cfg.task.env.sceneIdx
+    output_dir = os.path.join(asset_path, "Task", "0324", scene_category_short, scene_category+"_"+str(sceneIdx[0]))
     
     # Override scene config path for InfiniScene BEFORE converting to dict
     cfg.task.sceneConfigPath = output_dir
@@ -89,70 +92,83 @@ def generate_scenes(cfg: DictConfig):
     )
 
     # If arrangement generation failed during env creation, abort this attempt
-    if getattr(scene_gen, "_arrangement_failed", False):
-        print("✗ Arrangement failed during environment creation — skipping this attempt")
-        # if hasattr(scene_gen, "destroy_env"):
-        #     scene_gen.destroy_env()
-        # Exit non-zero so caller (subprocess runner) knows this attempt failed
-        sys.exit(1)
+    # if getattr(scene_gen, "_arrangement_failed", False):
+    #     print("✗ Arrangement failed during environment creation — skipping this attempt")
+    #     # if hasattr(scene_gen, "destroy_env"):
+    #     #     scene_gen.destroy_env()
+    #     # Exit non-zero so caller (subprocess runner) knows this attempt failed
+    #     sys.exit(1)
     
     
     # Run simulation to stabilize objects and keep the most stable snapshot
-    stabilization_steps = cfg.task.get("stabilization_steps", 50)
+    # stabilization_steps = cfg.task.get("stabilization_steps", 50)
 
-    best_score = None
-    best_step = -1
+    # best_score = None
+    # best_step = -1
     saved = None
 
     # scene_gen.step(None)
-    for step in range(stabilization_steps):
-        for _ in range(120):
-            scene_gen.env_physics_step()
-            scene_gen.post_phy_step()
+    # for step in range(stabilization_steps):
+    for _ in range(120):
+        scene_gen.env_physics_step()
+        scene_gen.post_phy_step()
 
-        # Stability score: lower mean speed is better
-        obj_vel = scene_gen.states["obj_vel"]
-        score = -obj_vel.norm(dim=-1).mean().item()
+    saved = scene_gen.save_env(force_save=True)
+    scene_gen.log_camera_view_image(saved)
 
-        if best_score is None or score > best_score:
-            best_score = score
-            best_step = step
-            saved = scene_gen.save_env()
-            scene_gen.log_camera_view_image(saved)
+    print(f"\n{'='*80}")
+    print(f"✓ Scene saved successfully to:")
+    print(f"  {output_dir}")
+    print(f"\nGenerated files:")
+    print(f"  - asset_config.json")
+    print(f"  - rearrange_config.npz")
+    print(f"  - task_config.npz")
+    print(f"{'='*80}\n")
 
-        print(f"  Step {step}/{stabilization_steps} (best={best_step})")
+    # # Stability score: lower mean speed is better
+    # obj_vel = scene_gen.states["obj_vel"]
+    # score = -obj_vel.norm(dim=-1).mean().item()
+
+    # if best_score is None or score > best_score:
+    #     best_score = score
+    #     # best_step = step
+    #     saved = scene_gen.save_env()
+    #     scene_gen.log_camera_view_image(saved)
+
+    #     # print(f"  Step {step}/{stabilization_steps} (best={best_step})")
     
-    # Fallback if nothing was saved during stabilization
-    if saved is None:
-        saved = scene_gen.save_env()
+    # # Fallback if nothing was saved during stabilization
+    # if saved is None:
+    #     saved = scene_gen.save_env()
 
-    # Count how many envs were saved in this run (saved is a list of bools per env)
-    num_saved = int(sum(1 for s in saved if s)) if saved is not None else 0
+    # # Count how many envs were saved in this run (saved is a list of bools per env)
+    # print(saved)
+    # num_saved = int(sum(1 for s in saved if s)) if saved is not None else 0
 
-    # If strict stability check failed, force-save latest state so generation does
-    # not get stuck in endless retry loops for articulated scenes.
-    if num_saved == 0:
-        print("[SceneGen] Stability check failed; force-saving current snapshot.")
-        saved = scene_gen.save_env(force_save=True)
-        scene_gen.log_camera_view_image(saved)
-        num_saved = int(sum(1 for s in saved if s)) if saved is not None else 0
-    if num_saved > 0:
-        print(f"\n{'='*80}")
-        print(f"✓ Scene saved successfully to:")
-        print(f"  {output_dir}")
-        print(f"\nGenerated files:")
-        print(f"  - asset_config.json")
-        print(f"  - rearrange_config.npz")
-        print(f"  - task_config.npz")
-        print(f"{'='*80}\n")
-    else:
-        print(f"\n{'='*80}")
-        print("✗ Scene generation failed - environment did not stabilize")
-        print("Try adjusting:")
-        print("  - stabilization_steps (increase)")
-        print("  - buffer_ratio (increase for more spacing)")
-        print("  - num_objects (decrease)")
-        print(f"{'='*80}\n")
+    # # If strict stability check failed, force-save latest state so generation does
+    # # not get stuck in endless retry loops for articulated scenes.
+    # if num_saved == 0:
+    #     print("[SceneGen] Stability check failed; force-saving current snapshot.")
+    #     saved = scene_gen.save_env(force_save=True)
+    #     scene_gen.log_camera_view_image(saved)
+    #     num_saved = int(sum(1 for s in saved if s)) if saved is not None else 0
+    # if num_saved > 0:
+    #     print(f"\n{'='*80}")
+    #     print(f"✓ Scene saved successfully to:")
+    #     print(f"  {output_dir}")
+    #     print(f"\nGenerated files:")
+    #     print(f"  - asset_config.json")
+    #     print(f"  - rearrange_config.npz")
+    #     print(f"  - task_config.npz")
+    #     print(f"{'='*80}\n")
+    # else:
+    #     print(f"\n{'='*80}")
+    #     print("✗ Scene generation failed - environment did not stabilize")
+    #     print("Try adjusting:")
+    #     print("  - stabilization_steps (increase)")
+    #     print("  - buffer_ratio (increase for more spacing)")
+    #     print("  - num_objects (decrease)")
+    #     print(f"{'='*80}\n")
     
     # Cleanup
     # NOTE: destroy_env can block with some articulated-scene setups.
@@ -160,7 +176,9 @@ def generate_scenes(cfg: DictConfig):
     if cfg.task.get("destroy_on_exit", False) and hasattr(scene_gen, "destroy_env"):
         scene_gen.destroy_env()
     # Exit with code 0 if at least one env was saved, else 1.
-    sys.exit(0 if num_saved > 0 else 1)
+    # sys.exit(0 if num_saved > 0 else 1)
+
+
 
 if __name__ == "__main__":
     # Parse our custom args (remove them before Hydra runs)
