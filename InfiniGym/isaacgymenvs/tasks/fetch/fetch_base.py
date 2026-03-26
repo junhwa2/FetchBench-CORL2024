@@ -52,8 +52,8 @@ class FetchBase(VecTask):
         self.states = {}                          # will be dict filled with relevant states to use for reward calculation
         self.robot_handles = {}                   # will be dict mapping names to relevant sim handles
         self.num_robot_dofs = None                # Total number of DOFs per env
-        # self.num_objs = self.cfg["env"]["numObjs"]
-        self.num_objs = None        
+        self.num_objs = self.cfg["env"]["numObjs"]  # Number of objects in the scene (excluding robot and table)
+
         # Tensor placeholders
         self._root_state = None             # State of root body        (n_envs, 13)
         self._dof_state = None              # Joint velocities          (n_envs, n_dof)

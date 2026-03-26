@@ -116,11 +116,12 @@ def launch_eval_hydra(cfg: DictConfig):
         vec_env.reset_task(i)
         # input("solve?")
         rgb, log = vec_env.solve()
+        print(">>>>>>>>>>> eval")
         res = vec_env.eval()
 
         res['extra'] = log
         results.append(res)
-
+        print(">>>>>>>>>>> log videos", len(rgb))
         log_videos(f'./videos/{experiment_name}', i, rgb, fps=24)
         # log_first_frame(f'./scene_images/{experiment_name}', i, rgb)
 

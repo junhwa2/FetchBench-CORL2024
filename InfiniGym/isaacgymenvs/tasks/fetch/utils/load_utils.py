@@ -4,6 +4,7 @@ import numpy as np
 import os
 import h5py
 import pandas as pd
+import random
 
 
 # Todo: Update this to be the asset path.
@@ -15,6 +16,12 @@ def get_franka_panda_asset(type='franka_r3', mode='ws'):
     if mode == 'ws':
         paths = {
             'asset_root': './assets',
+            'urdf_file': f'urdf/franka_description/robots/{type}.urdf'
+        }
+    elif mode == 'benchmark':
+        paths = {
+            # 'asset_root': './assets',
+            'asset_root': '../assets',
             'urdf_file': f'urdf/franka_description/robots/{type}.urdf'
         }
     else:
@@ -104,10 +111,11 @@ Object Assets
 
 def load_object_asset(obj_path):
     mesh = trimesh.load_mesh(f'{obj_path}/mesh.obj')
+    # 현재 obj는 shapenet에서 직접 받은 obj로 정점 등이 기존 fetchbench와 달라 mtl을 사용하기위해서는 shapenet의 obj 사용 필수
+    # shapenet의 obj는 list, tuple 형태로 로드되므로 하나의 trimesh.Trimesh로 합쳐줘야함
     if isinstance(mesh, trimesh.Scene):
-        mesh = trimesh.util.concatenate([g for g in mesh.geometry.values()]) # 
+        mesh = trimesh.util.concatenate([g for g in mesh.geometry.values()])
     elif isinstance(mesh, (list, tuple)):
-    # if not isinstance(mesh, trimesh.Trimesh):
         mesh = trimesh.util.concatenate(mesh)
     assert isinstance(mesh, trimesh.Trimesh)
     stable_poses = np.load(f'{obj_path}/stable_poses.npy')
@@ -338,12 +346,16 @@ class InfiniSceneLoader(object):
 
     def append_pose(self, pose, cat='scene'):
         if cat == 'scene':
+            self.scene_pose = list(self.scene_pose)
             self.scene_pose.append(pose)
         elif cat == 'robot':
+            self.robot_pose = list(self.robot_pose)
             self.robot_pose.append(pose)
         elif cat == 'camera':
+            self.camera_poses = list(self.camera_poses)
             self.camera_poses.append(pose)
         elif cat == 'object':
+            self.object_poses = list(self.object_poses)
             self.object_poses.append(pose)
         else:
             raise NotImplementedError
@@ -387,19 +399,26 @@ class InfiniSceneLoader(object):
         assert len(init_root_states) == len(init_obj_labels) == len(init_camera_poses)
 
         task_actor_states, task_obj_indices, task_obj_labels, task_camera_poses = [], [], [], []
+        obj_indices_, task_labels_ = [], []
         for k in range(len(init_root_states)):
             obj_indices, task_labels = self.get_obj_tasks(init_obj_labels[k])
-            for idx, label in zip(obj_indices, task_labels):
-                task_actor_states.append(init_root_states[k])
-                task_obj_indices.append(idx)
-                task_obj_labels.append(label)
-                task_camera_poses.append(init_camera_poses[k])
+            # target random하게 target obj 선택
+            i = random.randrange(len(obj_indices))
+            idx, label = obj_indices[i], task_labels[i]
 
+            task_actor_states.append(init_root_states[k])
+            task_obj_indices.append(idx)
+            task_obj_labels.append(label)
+            task_camera_poses.append(init_camera_poses[k])
+            obj_indices_.append(obj_indices)
+            task_labels_.append(task_labels)
         return {
             'task_init_state': task_actor_states,
             'task_obj_index': task_obj_indices,
             'task_obj_label': task_obj_labels,
-            'task_camera_pose': task_camera_poses
+            'task_camera_pose': task_camera_poses,
+            'task_cand_obj_index': obj_indices_, 
+            'task_cand_obj_label': task_labels_ 
         }
 
     def get_obj_tasks(self, obj_labels):
