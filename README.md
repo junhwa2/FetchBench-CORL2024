@@ -73,6 +73,17 @@ For cuda version mismatch issue, one can install the cudatoolkit-dev as follows
 conda install conda-forge::cudatoolkit-dev
 ```
 
+### Install Pykin
+Follow installation steps of Pykin (https://github.com/jdj2261/pykin)
+
+Install python-fcl (https://github.com/BerkeleyAutomation/python-fcl) and two dependency libraries.
+```
+pip install python-fcl
+sudo apt install liboctomap-dev
+sudo apt install libfcl-dev
+```
+
+
 #### (Optional) Install Contact-GraspNet-Pytorch
 
 If you want to run methods using contact-graspnet, we provide a copy of contact-graspnet-pytorch (https://github.com/elchun/contact_graspnet_pytorch).

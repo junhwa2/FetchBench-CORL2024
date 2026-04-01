@@ -67,6 +67,8 @@ class FetchBase(VecTask):
         self.task_camera_init_state = []
         self.task_obj_label = []
         self.task_obj_index = []
+        self.task_obj_cand_label = []
+        self.task_obj_cand_index = []
         self._task_idx = -1
         self.task_obj_color = gymapi.Vec3(1.0, 0.0, 0.0)
         self.default_obj_color = gymapi.Vec3(0.0, 0.0, 1.0)
@@ -664,6 +666,11 @@ class FetchBase(VecTask):
         self.task_camera_init_state.append(task_config['task_camera_pose'][:num_tasks])
         self.task_obj_index.append(task_config['task_obj_index'][:num_tasks])
         self.task_obj_label.append(task_config['task_obj_label'][:num_tasks].tolist())
+        ####### MUST remove this from v1.1 ##########
+        task_obj_cand_index, task_obj_cand_label = loader.get_obj_tasks(loader.object_labels[0])
+        self.task_obj_cand_index = [task_obj_cand_index] * num_tasks 
+        self.task_obj_cand_label = [task_obj_cand_label] * num_tasks
+        ##########################################
 
     def init_rb_index_map(self):
         rb_map = {}

@@ -17,7 +17,7 @@ viewer:
 # if given, will override the device setting in gym. 
 env:
   numTasks: null
-  enableDebugVis: False
+  enableDebugVis: True # False
 
   aggregateMode: 0
   aggregateBody: 30
@@ -28,6 +28,16 @@ env:
 
   # set to True if you use camera sensors in the environment
   enableCameraSensors: True
+  
+  ## copied from FetchPointCloudBase.yaml ##
+  cam:
+    num_cam: 2
+    width: 640
+    height: 480
+    hov: 70
+    depth_min: 0.15
+    depth_max: 2.5
+  ##########################################
 
 solution:
   cuRobo:
@@ -78,3 +88,15 @@ solution:
   num_step_repeat_per_plan_dt: 2 # usually motion_interpolation_dt / sim_dt
   num_osc_repeat: 12
   num_cartesian_steps: 5
+
+obs_data_gen:
+  max_grasp_pose: 200
+  max_grasp_pose_per_object: 100
+  
+  max_num_task_obj_cand: 25
+
+  pc_bound_option: 'panda_w_gripper_sphere' # options are {'panda_cube', 'panda_sphere', 'panda_w_gripper_cube', 'panda_w_gripper_sphere'}
+  pc_voxel_size: 0.015
+  mesh_sample_points: 100000
+  mesh_sample_links: ["panda_link4", "panda_link5", "panda_link6", "panda_link7", 
+                      "panda_hand", "panda_leftfinger", "panda_rightfinger"]

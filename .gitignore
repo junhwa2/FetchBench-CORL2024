@@ -11,8 +11,10 @@ InfiniGym/logs
 InfiniGym/videos
 
 # HJ added
+.vscode
 asset_release
 asset_release_v1
+asset_release_v1.1
 InfiniGym/images
 scripts
 *.sh

@@ -69,6 +69,16 @@ class FetchPointCloudBase(FetchBase):
 
     @torch.no_grad()
     def filter_ptd_segmentation(self, pts, seg, env_idx):
+        # seg can be (N, 1) or (N,), normalize to (N,)
+        if seg.ndim > 1:
+            seg = seg.squeeze(-1)
+
+        # Split points by each segmentation id.
+        pts_by_seg = {}
+        for seg_val in torch.unique(seg):
+            seg_int = int(seg_val.item())
+            pts_by_seg[seg_int] = pts[seg == seg_val].detach().cpu().numpy()
+        
         # filter robot, goal, scene
         robot_pixels = seg == 1
         goal_pixels = seg == (self.task_obj_index[env_idx][self.get_task_idx()] + 4)
@@ -76,7 +86,8 @@ class FetchPointCloudBase(FetchBase):
         seg_pts = {
             'robot': pts[robot_pixels].detach(),
             'goal': pts[goal_pixels].detach(),
-            'scene': pts[~(robot_pixels | goal_pixels)].detach()
+            'scene': pts[~(robot_pixels | goal_pixels)].detach(),
+            'by_seg': pts_by_seg
         }
 
         return seg_pts
