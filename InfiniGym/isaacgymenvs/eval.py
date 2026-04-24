@@ -1,5 +1,8 @@
 # python isaacgymenvs/eval.py task=FetchMeshCurobo scene=benchmark_eval/RigidObjDesk_0
-# python isaacgymenvs/eval.py task=FetchMeshCuroboPtdCGNBeta scene=benchmark_eval/RigidObjDesk_0
+# python isaacgymenvs/eval.py task=FetchBase scene=benchmark_eval/RigidObjDesk_0
+
+# this eval.py is not matching with branch main, v1_obs.
+# this eval.py is only for generate_scenes.py
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
@@ -122,8 +125,8 @@ def launch_eval_hydra(cfg: DictConfig):
         res['extra'] = log
         results.append(res)
         print(">>>>>>>>>>> log videos", len(rgb))
-        log_videos(f'./videos/{experiment_name}', i, rgb, fps=24)
-        # log_first_frame(f'./scene_images/{experiment_name}', i, rgb)
+        # log_videos(f'./videos/{experiment_name}', i, rgb, fps=24)
+        log_first_frame(f'./scene_images/{experiment_name}', i, rgb)
 
     # Log Results
     log_results(f'./runs/{experiment_name}', results)

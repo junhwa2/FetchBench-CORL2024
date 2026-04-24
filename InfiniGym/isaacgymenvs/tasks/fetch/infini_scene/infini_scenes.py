@@ -2,8 +2,12 @@
 import numpy as np
 import os
 import torch
+from torch import Tensor
 import imageio
 import trimesh.transformations as tra
+import json
+import pandas as pd
+import pickle
 
 from isaacgym import gymutil, gymtorch, gymapi
 from isaacgymenvs.utils.torch_jit_utils import to_torch, get_axis_params, tensor_clamp, \
@@ -13,18 +17,19 @@ from isaacgymenvs.tasks.fetch.infini_scene.trimesh_scene import TrimeshRearrange
 from isaacgymenvs.tasks.fetch.utils.load_utils import (sample_random_scene,
                                                  get_franka_panda_asset,
                                                  sample_random_objects,
+                                                 sample_random_objects_JH,
                                                  sample_random_combos,
                                                  InfiniSceneLoader)
 
 
 class InfiniScene(VecTask):
     def __init__(self, cfg, rl_device, sim_device, graphics_device_id,
-                 headless, virtual_screen_capture, force_render):
+                 headless, virtual_screen_capture, force_render, fixed_objects=None):
         self.cfg = cfg
 
         # If arrangement generation fails for any env, set this flag and
         # callers (e.g., generate_scenes) can detect and skip counting this attempt.
-        self._arrangement_failed = False
+        # self._arrangement_failed = False
 
         self.scene_config_path = f'{self.cfg["sceneConfigPath"]}'
         self.loader = InfiniSceneLoader(self.scene_config_path)
@@ -39,7 +44,10 @@ class InfiniScene(VecTask):
         # Env Asset
         self.robot_asset = None
         self.scene_asset = None
-        self.object_asset = None
+        if fixed_objects is not None:
+            self.object_asset = fixed_objects
+        else:
+            self.object_asset = None
         self.object_combo_asset = None
 
         # Values to be filled in at runtime
@@ -104,9 +112,9 @@ class InfiniScene(VecTask):
         # creation and tensor initialization may not have completed. In that
         # case, skip further initialization in this constructor to avoid
         # referencing uninitialized tensors (e.g. self._q is None).
-        if getattr(self, "_arrangement_failed", False):
-            print("InfiniScene init aborted due to arrangement failure.")
-            return
+        # if getattr(self, "_arrangement_failed", False):
+        #     print("InfiniScene init aborted due to arrangement failure.")
+        #     return
 
         self.robot_default_dof_pos = (to_torch([-0.31267092, -1.1996635, 0.05781832, -2.1767514,
                       0.06494738, 0.9786396, 0.53001183, 0.04, 0.04], device=self.device))
@@ -130,10 +138,29 @@ class InfiniScene(VecTask):
 
         mode = 'ws' if not self.cfg['benchmark'] else 'benchmark'
 
-        self.scene_asset = sample_random_scene(asset_config['scene_category'], asset_config['scene_idx'], mode=mode)
+        self.scene_asset = sample_random_scene(asset_config['scene_category'], asset_config['scene_idx'][0], mode=mode)
         self.object_asset = sample_random_objects(asset_config['num_objects'], eval_only=self.cfg['use_eval'], mode=mode)
         # self.object_combo_asset = sample_random_combos(asset_config['num_combos'], asset_config['combo_category'], mode=mode)
         self.object_combo_asset = [] 
+
+    def sample_random_asset_JH(self):
+        asset_config = {
+            'scene_category': self.cfg["env"].get("sceneCategory", None),
+            'scene_idx': self.cfg["env"].get("sceneIdx", None),
+            'num_objects': self.cfg["env"].get("numObjs", None),
+            'num_combos': self.cfg["env"].get("numCombos", None),
+            'combo_category': self.cfg["env"].get("comboCategory", None)
+        }
+        # Each Scene contains 15 assets
+        # assert asset_config['num_objects'] + asset_config['num_combos'] * 2 == 30
+
+        mode = 'ws' if not self.cfg['benchmark'] else 'benchmark'
+
+        self.scene_asset = sample_random_scene(asset_config['scene_category'], asset_config['scene_idx'][0], mode=mode)
+        # self.object_asset = sample_random_objects_JH(self.object_asset)
+        # self.object_combo_asset = sample_random_combos(asset_config['num_combos'], asset_config['combo_category'], mode=mode)
+        self.object_combo_asset = [] 
+
 
     def load_robot_asset(self):
         # load robot asset
@@ -235,8 +262,25 @@ class InfiniScene(VecTask):
         return scene
 
     def load_object_asset(self, objects):
+        """Load object assets into the current sim.
 
+        IMPORTANT: This function must NOT mutate the input `objects`.
+        We create an independent copy (excluding any existing `asset` handles,
+        which are C++ objects and not deepcopy/pickle-safe) and attach newly
+        loaded gym assets to the copied dicts.
+        """
+
+        import copy
+
+        # Create a safe independent copy of the object specs.
+        # If callers accidentally pass objects that already include an IsaacGym
+        # Asset handle under the key 'asset', we intentionally drop it here.
+        objects_local = []
         for obj in objects:
+            obj_copy = {k: copy.deepcopy(v) for k, v in obj.items() if k != "asset"}
+            objects_local.append(obj_copy)
+
+        for obj in objects_local:
             if self.cfg["env"]["objects"]["randomize_config"]:
                 density = np.random.uniform(0.1, 0.4) * 1e3
                 friction = np.random.uniform(0.6, 1.2)
@@ -294,7 +338,7 @@ class InfiniScene(VecTask):
                 'rest_offset': 0.0
             })
 
-        return objects
+        return objects_local
 
     def load_object_combo_asset(self, combos):
         if combos is None or len(combos) == 0:
@@ -399,22 +443,32 @@ class InfiniScene(VecTask):
     def _create_envs(self, num_envs, spacing, num_per_row):
         lower = gymapi.Vec3(-spacing, -spacing, 0.0)
         upper = gymapi.Vec3(spacing, spacing, spacing)
+        if (self.object_asset is None) and (self.scene_asset is None):
+            self.sample_random_asset()
 
-        self.sample_random_asset()
+            # self.object_asset을 pickle로 저장 (나중에 그대로 불러오기 위함)
+            sceneIdx = self.cfg["env"]['sceneIdx']
+            scene_category = self.cfg["env"]['sceneCategory']
+            scene_category_short = scene_category[:-len("SceneFactory")]
+
+            output_dir = os.path.join("/home/kist/FetchBench-CORL2024/asset_release", "Task", "v1.2", scene_category_short, scene_category+"_"+str(sceneIdx[0]))
+            output_dir = os.path.join(output_dir, 'sampled_object_asset.pkl')
+            with open(output_dir, 'wb') as f:
+                pickle.dump(self.object_asset, f)
+            print(f"[INFO] object_asset saved to {output_dir}")
+
+
+        elif (self.object_asset is not None) and (self.scene_asset is None):
+            self.sample_random_asset_JH()
         robot_asset = self.load_robot_asset()
         scene_assets = self.load_scene_asset(self.scene_asset)
-        # keep raw object list for arrangement (assets loaded after placement)
-        # raw_object_assets = self.object_asset
         object_assets = self.load_object_asset(self.object_asset)
-
         object_combo_assets = self.load_object_combo_asset(self.object_combo_asset)
 
-        # self.num_objs = len(object_combo_assets) * 2 + len(object_assets)
         self.num_objs = self.cfg["env"]["numObjs"]
 
         self.robot_asset = robot_asset
         self.scene_asset = scene_assets
-        # self.object_asset = raw_object_assets
         self.object_combo_asset = object_combo_assets
 
         trimesh_scene = TrimeshRearrangeScene(scene_assets['meshes'],
@@ -455,7 +509,7 @@ class InfiniScene(VecTask):
         self._obj_init_label = []
 
         for i in range(num_envs):
-            print("〓"*15,f"Creating env {i}/{num_envs}", "〓"*15)
+            print("〓"*15,f"Creating env {i}/{num_envs-1}", "〓"*15)
             seg_idx = 0
             env_ptr = self.gym.create_env(self.sim, lower, upper, num_per_row)
             # NOTE: franka should ALWAYS be loaded first in sim!
@@ -598,7 +652,8 @@ class InfiniScene(VecTask):
             # add cams
             cams, cam_configs = [], []
             for i in range(self.cfg["env"]["cam"]["num_cam"]):
-                cam_config = trimesh_scene.sample_camera_pose(i=i)
+                cam_config = trimesh_scene.sample_camera_pose_JH(robot_base_pos, i=i)
+                # cam_config = trimesh_scene.sample_camera_pose(i=i)
                 camera_handle = self.gym.create_camera_sensor(env_ptr, self.cam_params)
                 self.gym.set_camera_location(camera_handle, env_ptr,
                                              gymapi.Vec3(*apply_transform(cam_config['pos'], gym_transform)),
@@ -725,6 +780,118 @@ class InfiniScene(VecTask):
                 rgb_obs_buf.append([color_image])
         return rgb_obs_buf
 
+    # def init_torch_data(self):
+        env_ptr, robot_ptr = self.envs[0], self.robots[0]
+
+        self.robot_handles = {
+            "hand": self.gym.find_actor_rigid_body_handle(env_ptr, robot_ptr, "panda_hand"),
+            "left_finger": self.gym.find_actor_rigid_body_handle(env_ptr, robot_ptr, "panda_leftfinger"),
+            "right_finger": self.gym.find_actor_rigid_body_handle(env_ptr, robot_ptr, "panda_rightfinger"),
+            "left_finger_id": self.gym.find_actor_rigid_body_index(env_ptr, robot_ptr,
+                                                                   'panda_leftfinger', gymapi.DOMAIN_ENV),
+            "right_finger_id": self.gym.find_actor_rigid_body_index(env_ptr, robot_ptr,
+                                                                    'panda_rightfinger', gymapi.DOMAIN_ENV)
+        }
+
+        # IsaacGym state tensors are global to the sim. If the sim is reused (VecTask caches it),
+        # these tensors can include envs created by previous task instances.
+        # We operate only on the last `self.num_envs` envs created by *this* instance.
+        actors_per_env_expected = int(3 + self.num_objs)
+        dofs_per_env_expected = int(self.num_robot_dofs + self.num_scene_dofs)
+        total_dofs = int(self.gym.get_sim_dof_count(self.sim))
+
+        # Acquire base tensors and keep wrapped references (needed for indexed setters).
+        _actor_root_state_tensor = self.gym.acquire_actor_root_state_tensor(self.sim)
+        _dof_state_tensor = self.gym.acquire_dof_state_tensor(self.sim)
+        _rigid_body_state_tensor = self.gym.acquire_rigid_body_state_tensor(self.sim)
+        _contact_force_tensor = self.gym.acquire_net_contact_force_tensor(self.sim)
+
+        self._actor_root_state_tensor = gymtorch.wrap_tensor(_actor_root_state_tensor)
+        self._dof_state_tensor = gymtorch.wrap_tensor(_dof_state_tensor)
+        self._rigid_body_state_tensor = gymtorch.wrap_tensor(_rigid_body_state_tensor)
+        self._net_contact_force_tensor = gymtorch.wrap_tensor(_contact_force_tensor)
+
+        # Infer sim env count (prefer actor-root tensor because it aligns with (actors, 13)).
+        sim_num_envs = int(self.num_envs)
+        print("self.num_envs: ", self.num_envs)
+        print("sim_num_envs: ", sim_num_envs)
+        num_actors_total = int(self._actor_root_state_tensor.shape[0])
+        if actors_per_env_expected > 0 and num_actors_total % actors_per_env_expected == 0:
+            sim_num_envs_from_actors = num_actors_total // actors_per_env_expected
+            if sim_num_envs_from_actors >= self.num_envs:
+                sim_num_envs = int(sim_num_envs_from_actors)
+        elif dofs_per_env_expected > 0 and total_dofs % dofs_per_env_expected == 0:
+            sim_num_envs_from_dofs = total_dofs // dofs_per_env_expected
+            if sim_num_envs_from_dofs >= self.num_envs:
+                sim_num_envs = int(sim_num_envs_from_dofs)
+        print("sim_num_envs: ", sim_num_envs)
+        env_offset = max(sim_num_envs - int(self.num_envs), 0)
+        print("env_offset: ", env_offset)
+        self._sim_num_envs = int(sim_num_envs)
+        self._env_offset = int(env_offset)
+
+        # Per-env DOFs: avoid dividing by self.num_envs when sim has extra envs.
+        if dofs_per_env_expected > 0:
+            self.num_dofs = int(dofs_per_env_expected)
+        else:
+            self.num_dofs = int(total_dofs // max(sim_num_envs, 1))
+
+        # Full views then slice the env range that belongs to this task.
+        root_all = self._actor_root_state_tensor.view(sim_num_envs, -1, 13)
+        # print("root_all: ", root_all)
+        print("root_all shape: ", root_all.shape)
+        dof_all = self._dof_state_tensor.view(sim_num_envs, -1, 2)
+        rigid_all = self._rigid_body_state_tensor.view(sim_num_envs, -1, 13)
+        contact_all = self._net_contact_force_tensor.view(sim_num_envs, -1, 3)
+
+        self._root_state = root_all[env_offset:env_offset + self.num_envs]
+        self._dof_state = dof_all[env_offset:env_offset + self.num_envs]
+        self._rigid_body_state = rigid_all[env_offset:env_offset + self.num_envs]
+        self._contact_force_state = contact_all[env_offset:env_offset + self.num_envs]
+
+        _robot_jacobian_tensor = gymtorch.wrap_tensor(self.gym.acquire_jacobian_tensor(self.sim, "robot"))
+        _robot_mm_tensor = gymtorch.wrap_tensor(self.gym.acquire_mass_matrix_tensor(self.sim, "robot"))
+        if _robot_jacobian_tensor.shape[0] == sim_num_envs:
+            _robot_jacobian_tensor = _robot_jacobian_tensor[env_offset:env_offset + self.num_envs]
+        if _robot_mm_tensor.shape[0] == sim_num_envs:
+            _robot_mm_tensor = _robot_mm_tensor[env_offset:env_offset + self.num_envs]
+
+        # robot states
+        self._q = self._dof_state[..., 0]
+        self._qd = self._dof_state[..., 1]
+        self._scene_default_dof_pos = self._q[:, self.num_robot_dofs:self.num_robot_dofs + self.num_scene_dofs].clone()
+        self._robot_base_state = self._root_state[:, 0, :]
+        print("robot_base_state shape: ", self._robot_base_state.shape)
+        self._table_base_state = self._root_state[:, 1, :]
+        self._eef_state = self._rigid_body_state[:, self.robot_handles["hand"], :]
+        self._eef_lf_state = self._rigid_body_state[:, self.robot_handles["left_finger"], :]
+        self._eef_rf_state = self._rigid_body_state[:, self.robot_handles["right_finger"], :]
+
+        # robot finger force
+        self._left_finger_force = self._contact_force_state[:, self.robot_handles['left_finger_id'], 0:3]
+        self._right_finger_force = self._contact_force_state[:, self.robot_handles['right_finger_id'], 0:3]
+
+        # scene states
+        self._scene_base_state = self._root_state[:, 2, :]
+
+        # end-effector jacobian and inertia matrix for OSC
+        hand_joint_index = self.gym.get_actor_joint_dict(env_ptr, robot_ptr)['panda_hand_joint']
+        self._j_eef = _robot_jacobian_tensor[:, hand_joint_index, :, :7]
+        self._mm = _robot_mm_tensor[:, :7, :7]
+
+        # object states
+        self._obj_state = self._root_state[:, -self.num_objs:, :]
+        self._obj_init_state = (to_torch(self._obj_init_state, device=self.device, dtype=torch.float)
+                                .view(self.num_envs, self.num_objs, 13))
+
+        self.init_control()
+
+        # Initialize indices
+        actors_per_env = int(self._root_state.shape[1])
+        start = int(env_offset * actors_per_env)
+        end = int((env_offset + self.num_envs) * actors_per_env)
+        self._global_indices = torch.arange(start, end, dtype=torch.int32, device=self.device).view(self.num_envs, -1)
+
     def init_torch_data(self):
         env_ptr, robot_ptr = self.envs[0], self.robots[0]
 
@@ -789,9 +956,20 @@ class InfiniScene(VecTask):
 
     def init_control(self):
         # Initialize actions
-        self._pos_control = torch.zeros((self.num_envs, self.num_dofs), dtype=torch.float, device=self.device)
-        self._vel_control = torch.zeros_like(self._pos_control)
-        self._effort_control = torch.zeros_like(self._pos_control)
+        # NOTE: when the sim is reused (VecTask cache), IsaacGym expects full-size
+        # DOF target tensors for the entire sim. We keep base tensors sized to the
+        # sim, and expose per-task env views for convenience.
+        sim_num_envs = int(getattr(self, "_sim_num_envs", self.num_envs))
+        env_offset = int(getattr(self, "_env_offset", 0))
+        env_end = int(env_offset + self.num_envs)
+
+        self._pos_control_tensor = torch.zeros((sim_num_envs, self.num_dofs), dtype=torch.float, device=self.device)
+        self._vel_control_tensor = torch.zeros_like(self._pos_control_tensor)
+        self._effort_control_tensor = torch.zeros_like(self._pos_control_tensor)
+
+        self._pos_control = self._pos_control_tensor[env_offset:env_end]
+        self._vel_control = self._vel_control_tensor[env_offset:env_end]
+        self._effort_control = self._effort_control_tensor[env_offset:env_end]
 
         if self.cfg["env"]["armControlType"] == 'osc':
             self._arm_control = self._effort_control[:, :7]
@@ -834,6 +1012,73 @@ class InfiniScene(VecTask):
             "obj_vel": self._obj_state[..., 7:]
 
         })
+
+    # def reset_idx(self, env_ids):
+    #     # Todo: Add init joint angle noise.
+    #     pos = tensor_clamp(
+    #         self.robot_default_dof_pos.unsqueeze(0),
+    #         self.robot_dof_lower_limits,
+    #         self.robot_dof_upper_limits
+    #     )
+
+    #     # Overwrite gripper init pos (no noise since these are always position controlled)
+    #     pos[:, -2:] = self.robot_default_dof_pos[-2:]
+    #     pos = pos.repeat(len(env_ids), 1)
+
+    #     # Reset the internal obs accordingly
+    #     self._q[env_ids, :self.num_robot_dofs] = pos
+    #     self._qd[env_ids, :self.num_robot_dofs] = torch.zeros_like(self._qd[env_ids, :self.num_robot_dofs])
+
+    #     scene_dof_start = self.num_robot_dofs
+    #     scene_dof_end = self.num_robot_dofs + self.num_scene_dofs
+    #     if self.num_scene_dofs > 0:
+    #         self._q[env_ids, scene_dof_start:scene_dof_end] = self._scene_default_dof_pos[env_ids]
+    #         self._qd[env_ids, scene_dof_start:scene_dof_end] = 0.0
+
+    #     # Set any position control to the current position, and any vel / effort control to be 0
+    #     # NOTE: Task takes care of actually propagating these controls in sim using the SimActions API
+    #     self._pos_control[env_ids, :] = 0.0
+    #     self._effort_control[env_ids, :] = 0.0
+    #     self._vel_control[env_ids, :] = 0.0
+    #     self._pos_control[env_ids, :self.num_robot_dofs] = pos
+
+    #     # Deploy updates
+    #     multi_env_ids_int32 = self._global_indices[env_ids, 0].flatten()
+    #     if self.num_scene_dofs > 0:
+    #         scene_actor_ids_int32 = self._global_indices[env_ids, 2].flatten()
+    #         dof_actor_ids_int32 = torch.cat([multi_env_ids_int32, scene_actor_ids_int32], dim=0)
+    #     else:
+    #         dof_actor_ids_int32 = multi_env_ids_int32
+
+    #     self.gym.set_dof_position_target_tensor_indexed(self.sim,
+    #                                                     gymtorch.unwrap_tensor(self._pos_control_tensor),
+    #                                                     gymtorch.unwrap_tensor(multi_env_ids_int32),
+    #                                                     len(multi_env_ids_int32))
+    #     self.gym.set_dof_velocity_target_tensor_indexed(self.sim,
+    #                                                     gymtorch.unwrap_tensor(self._vel_control_tensor),
+    #                                                     gymtorch.unwrap_tensor(multi_env_ids_int32),
+    #                                                     len(multi_env_ids_int32))
+    #     self.gym.set_dof_actuation_force_tensor_indexed(self.sim,
+    #                                                     gymtorch.unwrap_tensor(self._effort_control_tensor),
+    #                                                     gymtorch.unwrap_tensor(multi_env_ids_int32),
+    #                                                     len(multi_env_ids_int32))
+    #     self.gym.set_dof_state_tensor_indexed(self.sim,
+    #                                           gymtorch.unwrap_tensor(self._dof_state_tensor),
+    #                                           gymtorch.unwrap_tensor(dof_actor_ids_int32),
+    #                                           len(dof_actor_ids_int32))
+
+    #     multi_env_ids_objects_int32 = self._global_indices[env_ids, 3:].flatten()
+    #     self._obj_state[env_ids, :] = self._obj_init_state[env_ids, :]
+    #     self.gym.set_actor_root_state_tensor_indexed(
+    #         self.sim, gymtorch.unwrap_tensor(self._actor_root_state_tensor),
+    #         gymtorch.unwrap_tensor(multi_env_ids_objects_int32), len(multi_env_ids_objects_int32))
+
+    #     self.progress_buf[env_ids] = 0
+    #     self.reset_buf[env_ids] = 0
+    #     self.success_buf[env_ids] = 0
+
+    #     self.env_physics_step()
+    #     self._refresh()
 
     def reset_idx(self, env_ids):
         # Todo: Add init joint angle noise.
@@ -958,6 +1203,7 @@ class InfiniScene(VecTask):
         p_curr = (obj_curr_pos + quat_apply(obj_curr_quat, obj_com)).cpu().numpy()
 
         delta_pos = np.linalg.norm(p_init - p_curr, axis=-1)
+        delta_pos_z = np.abs(p_init[:, 2] - p_curr[:, 2])
 
         obj_vel = self.states["obj_vel"][idx].cpu().numpy()
         delta_v = np.linalg.norm(obj_vel[..., :3], axis=-1)
@@ -966,12 +1212,13 @@ class InfiniScene(VecTask):
         res = True
         for i, o in enumerate(self._obj_init_label[idx]):
             if 'on_floor' in o:
-                res &= (delta_v[i] < 1e-1)
+                # res &= (delta_v[i] < 5e-1)
                 continue
 
-            res &= (delta_v[i] < 5e-2)
-            res &= (delta_pos[i] < 5e-2)
-
+            res &= (delta_v[i] < 2e-1)
+            res &= (delta_pos[i] < 2e-1)
+            res &= (delta_pos_z[i] < 5e-2)
+            # print(f"\ndelta_v[i]: {delta_v[i]}, delta_pos[i]: {delta_pos[i]}")
         return res
 
     def log_camera_view_image(self, save):
@@ -990,6 +1237,7 @@ class InfiniScene(VecTask):
 
     def save_env(self, max_envs=1, force_save=False):
         saved = []
+
         for i in range(self.num_envs):
             robot_state = self._robot_base_state[i].cpu().numpy()
             table_state = self._table_base_state[i].cpu().numpy()
@@ -1014,9 +1262,18 @@ class InfiniScene(VecTask):
             self.loader.append_pose(np.stack(self._cam_config[i]), cat='camera')
             self.loader.object_labels.append(obj_init_label)
 
-        # dump env configs
-        # self.loader.save_env_config()
-        self.loader.save_env_config(save_task_config=any(saved))
+            # print("\nadd object_state")
+            # print(object_state)
+
+        saved_ = [ok for ok in saved if ok]
+        tasks = None
+        for i, is_saved in enumerate(saved_):
+            if not is_saved:
+                print(is_saved)
+                continue
+            tasks = self.loader.create_env_tasks(i)
+            self.loader.append_task(tasks)
+            
         return saved
 
 

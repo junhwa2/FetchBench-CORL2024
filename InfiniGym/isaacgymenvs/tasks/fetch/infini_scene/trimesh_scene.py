@@ -405,12 +405,21 @@ class TrimeshRearrangeScene(object):
         
         # 4 1~3을 10번 반복하여 가장 많이 배치된 경우 선택
         # 5
-        for trial in range(2):
+        for trial in range(1):
             print(f"─"*10,"Trial: ",{trial+1},"─"*10)
             self.remove_objects()
             
             # 1. 물체 100개중 min개를 랜덤하게 선택
-            sampled_objects = random.sample(objects, k=numSceneObjs)
+            candidate_ks = list(range(20, numSceneObjs + 1, 3))
+
+            if len(objects) < numSceneObjs:
+                raise ValueError(
+                    f"random_arrangement_JH: len(objects)={len(objects)} < numSceneObjs={numSceneObjs}; "
+                )
+            
+            # Weighted sampling: larger k has higher probability
+            k_scene_objs = random.choices(candidate_ks, weights=candidate_ks, k=1)[0]
+            sampled_objects = random.sample(objects, k=k_scene_objs)
 
             count = 0
             n_objects = []
@@ -420,6 +429,7 @@ class TrimeshRearrangeScene(object):
                 n_obj = {}
                 for k, v in obj.items():
                     n_obj[k] = v
+                # print(n_obj['mesh'])
                 obj_mesh = n_obj['mesh']
                 obj_name = n_obj['name']
                 obj_poses = n_obj['stable_poses']
@@ -450,6 +460,16 @@ class TrimeshRearrangeScene(object):
                 
                 success, placement_T, label = self.find_object_placement(obj_mesh, obj_poses, max_iter=100)
                 if success:
+                    # test (위치에 따른 안정화)
+                    # sample_T = placement_T.copy()
+                    # placement_T = np.array([1., -0.03, 0., -0.05,
+                    #                         0.03, 1., 0., 0.31,
+                    #                         0., 0., 1., 0.85,
+                    #                         0., 0., 0., 1.]).reshape(4, 4)
+                    # # initialize x,y translation from sampled placement
+                    # placement_T[0, 3] = sample_T[0, 3]
+                    # placement_T[1, 3] = sample_T[1, 3]
+
                     # 성공 순서에 따라 name 초기화
                     n_obj['success'] = f'obj_{num}'
                     print(f"\t[Trial {trial+1}] Placed object num: {num}", "→", n_obj['file'])
@@ -562,6 +582,61 @@ class TrimeshRearrangeScene(object):
 
         return cam_pose
 
+    def sample_camera_pose_JH(self, robot_base_pos, i=0):
+        # assert i <= 1, "Only support two cams, left & right"
+
+        # now using i <= 2, where i=0,1 are front cams and i=2 is top cam
+        cam_tar_offset = self._support_robot_cam_config['camera_tar_offset']
+        cam_pos_offset = self._support_robot_cam_config['camera_pos_offset']
+        support_bounds = self._support_robot_cam_config['support_bounds']
+
+        x_mean = (support_bounds[1][0] + support_bounds[0][0]) / 2.
+        y_mean = (support_bounds[1][1] + support_bounds[0][1]) / 2.
+        z_mean = (support_bounds[1][2] + support_bounds[0][2]) / 2.
+
+        if i < 2:
+            for _ in range(20):
+
+                x_f = np.random.uniform(x_mean + cam_tar_offset[0][0], x_mean + cam_tar_offset[0][1])
+                y_f = np.random.uniform(y_mean + cam_tar_offset[1][0], y_mean + cam_tar_offset[2][1])
+                z_f = np.random.uniform(z_mean + cam_tar_offset[2][0], z_mean + cam_tar_offset[2][1])
+
+                x_c = support_bounds[1][0] + np.random.uniform(*cam_pos_offset[0])
+                y_c = y_mean + (-1) ** i * (x_c - support_bounds[1][0]) * np.tan(np.random.uniform(*cam_pos_offset[1]))
+
+                z_c = z_f
+                z = z_c + np.random.uniform(*cam_pos_offset[2])
+
+                d = np.sqrt((x_c - x_f) ** 2 + (y_c - y_f) ** 2)
+                alpha = np.arctan((z - z_f) / d)
+                l = (x_c - support_bounds[1][0]) / np.cos(np.arctan((y_c - y_f) / (x_c - x_f)))
+
+                e1 = z - l * np.tan(alpha + (27 / 180) * np.pi)
+                e2 = z + l * np.tan(((27 / 180) * np.pi) - alpha)
+
+                if (e1 <= support_bounds[0][2] + 0.03 and e2 >= support_bounds[1][2] - 0.03):
+                    z_c = z
+                    break
+
+        else:
+            # x_f = 0
+            x_f = x_mean
+            y_f = 0
+            # z_f = robot_base_pos[2] + 0.6
+            z_f = z_mean
+            
+            x_c = robot_base_pos[0] - 0.05
+            y_c = 0
+            z_c = robot_base_pos[2] + 1.1
+
+        cam_pose = {
+            'focus': [x_f, y_f, z_f],
+            'pos': [x_c, y_c, z_c]
+        }
+
+        return cam_pose
+
+
     def as_trimesh_scene(self):
         trimesh_scene = trimesh.scene.Scene()
         for obj_id, obj in self._objects.items():
@@ -646,7 +721,7 @@ if __name__ == "__main__":
     while True:
 
         start_time = time.time()
-        n_combos, n_objects = scene.random_arrangement(5, objects=objects, combo_objects=[])
+        n_combos, n_objects = scene.random_arrangement_JH(5, objects=objects, combo_objects=[])
         elapsed_time = time.time() - start_time
         
         print("〓"*30)

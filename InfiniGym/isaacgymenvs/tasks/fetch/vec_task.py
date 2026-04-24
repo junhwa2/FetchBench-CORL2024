@@ -25,6 +25,10 @@
 # CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 # OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+# this vec_task.py is not matching with branch main, v1_obs.
+# this vec_task.py is only for generate_scenes.py
+
 import os
 import time
 from datetime import datetime
@@ -52,17 +56,21 @@ import sys
 import abc
 from abc import ABC
 
-EXISTING_SIM = None
+# EXISTING_SIM = None
 SCREEN_CAPTURE_RESOLUTION = (1027, 768)
 
 
-def _create_sim_once(gym, *args, **kwargs):
-    global EXISTING_SIM
-    if EXISTING_SIM is not None:
-        return EXISTING_SIM
-    else:
-        EXISTING_SIM = gym.create_sim(*args, **kwargs)
-        return EXISTING_SIM
+# def _create_sim_once(gym, *args, **kwargs):
+#     global EXISTING_SIM
+#     if EXISTING_SIM is not None:
+#         return EXISTING_SIM
+#     else:
+#         EXISTING_SIM = gym.create_sim(*args, **kwargs)
+#         return EXISTING_SIM
+
+def _create_sim_once_JH(gym, *args, **kwargs):
+    EXISTING_SIM = gym.create_sim(*args, **kwargs)
+    return EXISTING_SIM
 
 
 class Env(ABC):
@@ -336,7 +344,7 @@ class VecTask(Env):
         Returns:
             the Isaac Gym sim object.
         """
-        sim = _create_sim_once(self.gym, compute_device, graphics_device, physics_engine, sim_params)
+        sim = _create_sim_once_JH(self.gym, compute_device, graphics_device, physics_engine, sim_params)
         if sim is None:
             print("*** Failed to create sim")
             quit()
@@ -440,12 +448,37 @@ class VecTask(Env):
     """
     Destroy
     """
+    # def destroy_env(self):
+    #     if self.viewer is not None:
+    #         self.gym.destroy_viewer(self.viewer)
+    #     print("1")
+    #     self.gym.destroy_sim(self.sim)
+    #     print("2")
+    #     global EXISTING_SIM
+    #     EXISTING_SIM = None
+
     def destroy_env(self):
         if self.viewer is not None:
             self.gym.destroy_viewer(self.viewer)
+
+        if hasattr(self, "cameras") and hasattr(self, "envs"):
+            for env_ptr, cam_handles in zip(self.envs, self.cameras):
+                if isinstance(cam_handles, list):
+                    for cam in cam_handles:
+                        self.gym.destroy_camera_sensor(self.sim, env_ptr, cam)
+                else:
+                    self.gym.destroy_camera_sensor(self.sim, env_ptr, cam_handles)
+        if hasattr(self, "envs"):
+            for env_ptr in self.envs:
+                print("3")
+                self.gym.destroy_env(env_ptr)
+                print("4")
+
+        print("5")
         self.gym.destroy_sim(self.sim)
-        global EXISTING_SIM
-        EXISTING_SIM = None
+        print("6")
+        # global EXISTING_SIM
+        # EXISTING_SIM = None
 
     """
     Render

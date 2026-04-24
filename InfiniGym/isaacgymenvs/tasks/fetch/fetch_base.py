@@ -1,3 +1,5 @@
+# this fetch_base.py is not matching with branch main, v1_obs.
+# this fetch_base.py is only for generate_scenes.py
 
 import numpy as np
 import os
@@ -489,7 +491,7 @@ class FetchBase(VecTask):
     Create Envs
     """
 
-    def create_sim(self):
+    def create_sim(self, fixed_objects=None):
         self.sim_params.up_axis = gymapi.UP_AXIS_Z
         self.sim_params.gravity.x = 0
         self.sim_params.gravity.y = 0
@@ -563,7 +565,7 @@ class FetchBase(VecTask):
 
             table_actor = self.gym.create_actor(env_ptr, table_asset['asset'], table_start_pose, "table", n, 0, seg_idx)
             seg_idx += 1
-            self.gym.set_rigid_body_color(env_ptr, table_actor, 0, gymapi.MESH_VISUAL, gymapi.Vec3(0.0, 0.0, 0.0))
+            # self.gym.set_rigid_body_color(env_ptr, table_actor, 0, gymapi.MESH_VISUAL, gymapi.Vec3(0.0, 0.0, 0.0))
 
             if self.aggregate_mode == 2:
                 self.gym.begin_aggregate(env_ptr, max_agg_bodies, max_agg_shapes, True)
@@ -590,7 +592,7 @@ class FetchBase(VecTask):
                 object_ref_points.append(apply_transform(cbo['metadata']['organizer_com'], combo_transform))
                 object_grasp_poses.append(None)
 
-                self.gym.set_rigid_body_color(env_ptr, org_actor, 0, gymapi.MESH_VISUAL, self.default_obj_color)
+                # self.gym.set_rigid_body_color(env_ptr, org_actor, 0, gymapi.MESH_VISUAL, self.default_obj_color)
 
                 obj_start_pose = vec_state_to_pose(loader.object_poses[0][2*k+1])
                 obj_actor = self.gym.create_actor(env_ptr, cbo['asset'][1], obj_start_pose,
@@ -599,7 +601,7 @@ class FetchBase(VecTask):
                 object_actors.append(obj_actor)
                 object_ref_points.append(apply_transform(cbo['metadata']['object_com'], combo_transform))
                 object_grasp_poses.append(None)   # Todo: Add sample Grasp Poses.
-                self.gym.set_rigid_body_color(env_ptr, obj_actor, 0, gymapi.MESH_VISUAL, self.default_obj_color)
+                # self.gym.set_rigid_body_color(env_ptr, obj_actor, 0, gymapi.MESH_VISUAL, self.default_obj_color)
 
             idx_offset = len(combo_assets) * 2
             # add rigid objects
@@ -1063,17 +1065,45 @@ class FetchBase(VecTask):
 
     def solve(self):
         # set goal obj color
-        self.set_target_color()
+        # self.set_target_color()
 
-        for _ in range(60):
+        for _ in range(180):
             self.env_physics_step()
             self.post_phy_step()
 
         contact = self.get_robot_contacts()
-        rgb, seg = self.get_camera_image(rgb=True, seg=False)
+        rgb, seg = self.get_camera_image(rgb=True, seg=True)
+        camera_obj_ids = {}
+        all_obj_ids = set()
 
+        # print(f"seg envs: {len(seg)}, rgb envs: {len(rgb)}")
+        for env_idx in range(len(seg)):
+            print(f"\nenv id: {env_idx}")
+            camera_obj_ids.clear()
+            
+            for cam_idx in range(len(seg[env_idx]) - 1):  # Exclude vis cam (last one)
+                seg_ids = np.unique(seg[env_idx][cam_idx])
+                obj_ids = seg_ids[seg_ids > 3]
+                camera_obj_ids[cam_idx] = set(obj_ids)
+                print(f"cam id: {cam_idx}, obj ids: {obj_ids.tolist()}")
+                all_obj_ids.update(obj_ids)
+            
+            # 모든 카메라에 걸쳐서 나타난 모든 객체 ID 합치기
+            print(f"모든 카메라에 보인 obj set: {sorted(list(all_obj_ids))}")
+            print("\n개수: ", len(all_obj_ids))
+            
+            # 카메라별 비교 (0, 1, 2 카메라가 모두 있을 경우)
+            if 0 in camera_obj_ids and 1 in camera_obj_ids and 2 in camera_obj_ids:
+                cam0_objs = camera_obj_ids[0]
+                cam1_objs = camera_obj_ids[1]
+                cam2_objs = camera_obj_ids[2]
+                
+                unique_to_cam2 = cam2_objs - cam0_objs - cam1_objs
+                print(f"cam0, cam1에 없고 cam2에만 있는 obj: {sorted(list(unique_to_cam2))}")
+        
+        # self.log_segmented_objects_image("~/FetchBench-CORL2024", rgb=rgb, seg=seg)
         # set to default color
-        self.set_default_color()
+        # self.set_default_color()
 
         return image_to_video(rgb), None
 
@@ -1192,6 +1222,49 @@ class FetchBase(VecTask):
     """
     API Function
     """
+    def log_segmented_objects_image(self, save_path, rgb=None, seg=None, env_idx=None):
+        """
+        Save only segmented objects (seg_id > 3) as images.
+        If rgb and seg are provided, uses them. Otherwise, renders new images.
+        
+        Args:
+            save_path: Directory path to save images
+            rgb: RGB image buffer (optional, will render if not provided)
+            seg: Segmentation buffer (optional, will render if not provided)
+            env_idx: Environment index to save. If None, save all envs.
+        """
+        # Use provided buffers or render new ones
+        if rgb is None or seg is None:
+            self.gym.fetch_results(self.sim, True)
+            self.gym.step_graphics(self.sim)
+            self.gym.render_all_camera_sensors(self.sim)
+            self.gym.start_access_image_tensors(self.sim)
+            rgb, seg = self.get_numpy_images(self.cameras, rgb=True, seg=True)
+            self.gym.end_access_image_tensors(self.sim)
+        
+        # Expand path if it starts with ~
+        save_path = os.path.expanduser(save_path)
+        os.makedirs(save_path, exist_ok=True)
+
+        # Determine which envs to process
+        envs_to_process = [env_idx] if env_idx is not None else range(len(seg))
+
+        for e in envs_to_process:
+            rgb_images = rgb[e]
+            seg_images = seg[e]
+
+            for cam_idx, (rgb_img, seg_img) in enumerate(zip(rgb_images, seg_images)):
+                # seg_img shape: (height, width, 1)
+                seg_mask = seg_img[..., 0]  # (height, width)
+                obj_mask = seg_mask > 3  # Only objects (seg_id >= 4)
+
+                # Create output image - copy RGB and set non-object areas to black
+                output_img = rgb_img.copy().astype(np.uint8)
+                output_img[~obj_mask] = 0  # Set non-object pixels to black
+
+                # Save the image
+                filename = f'{save_path}/env_{e}_cam_{cam_idx}_objects.png'
+                imageio.imwrite(filename, output_img)
 
     def get_task_idx(self):
         return self._task_idx

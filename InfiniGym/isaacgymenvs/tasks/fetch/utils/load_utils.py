@@ -216,7 +216,7 @@ def load_h5_grasps(filename):
     return T, success
 
 
-def get_object_asset(type, idx, mode='ws'):
+def get_object_asset(type, idx, mode='benchmark'):
     if mode == 'ws':
         paths = {
             'asset_root': f'{ASSET_PATH}/objects/{type}/{idx}',
@@ -302,6 +302,33 @@ def sample_random_objects(num_objs, eval_only=True,  mode='ws'):
 
     return objects
 
+def sample_random_objects_JH(object_asset, eval_only=True,  mode='benchmark'):
+    if object_asset is not None:
+        # object_asset에서 category/id 추출
+        cat_id_set = set()
+        for asset in object_asset:
+            asset_root = asset.get('asset_root', None)
+            if asset_root is not None:
+                parts = asset_root.rstrip('/').split('/')
+                if len(parts) >= 2:
+                    category = parts[-2]
+                    obj_id = parts[-1]
+                    cat_id_set.add(f"{category}/{obj_id}")
+        # metadata.csv 읽어서 path 컬럼과 비교
+        metadata = pd.read_csv(f'{ASSET_PATH}/benchmark_objects/metadata.csv')
+        if eval_only:
+            metadata = metadata.loc[metadata['use_benchmark'] == True]
+            metadata = metadata.loc[metadata['use_eval'] == True]
+        # path 컬럼에서 category/id가 cat_id_set에 있는 row만 필터링
+        samples = metadata[metadata['Path'].apply(lambda x: any(x.endswith(cid) for cid in cat_id_set))]
+        objects = []
+        for i, (n, s) in enumerate(samples.iterrows()):
+            o = get_object_asset(s['Category'], s['ID'], mode)
+            o['name'] = f'obj_{i}'
+            objects.append(o)
+        # print("objects")
+        # print(objects)
+        return objects
 
 # Todo: Update Combo Asset Sample
 def sample_random_combos(num_objs, combo_type, mode='ws'):
@@ -339,6 +366,14 @@ class InfiniSceneLoader(object):
         self.object_poses = []
         self.object_labels = []
 
+        # 준화 task_config 추가
+        self.task_actor_states = []
+        self.task_target_index = []
+        self.task_target_labels = []
+        self.task_camera_poses_ = []
+        self.task_obj_indices_ = []
+        self.task_obj_labels_ = []
+
         self._num_compositions = 0
 
     def __len__(self):
@@ -360,7 +395,7 @@ class InfiniSceneLoader(object):
         else:
             raise NotImplementedError
 
-    def save_env_config(self, save_task_config=True):
+    def save_env_config(self):
         # vicinity check
         assert (len(self.scene_pose) == len(self.robot_pose) == len(self.camera_poses)
                 == len(self.object_poses) == len(self.object_labels))
@@ -388,37 +423,63 @@ class InfiniSceneLoader(object):
         }
         np.savez(f'{self._path}/rearrange_config.npz', **rearrange)
 
-        if save_task_config:
-            tasks = self.create_env_tasks()
-            np.savez(f'{self._path}/task_config.npz', **tasks)
+        # if save_task_config:
+        #     tasks = self.create_env_tasks()
+        tasks = {
+            'task_init_state': self.task_actor_states,
+            'task_obj_index': self.task_target_index,
+            'task_obj_label': self.task_target_labels,
+            'task_camera_pose': self.task_camera_poses_,
+            'task_cand_obj_index': self.task_obj_indices_, 
+            'task_cand_obj_label': self.task_obj_labels_ 
+        }
+        np.savez(f'{self._path}/task_config.npz', **tasks)
 
-    def create_env_tasks(self):
+    def append_task(self, tasks):
+        self.task_actor_states.append(tasks['init_state'])
+        self.task_target_index.append(tasks['obj_index'])
+        self.task_target_labels.append(tasks['obj_label'])
+        self.task_camera_poses_.append(tasks['camera_pose'])
+        # print("*"*20)
+        # print("append_task - task_cand_obj_index: ", tasks['cand_obj_index'])
+        self.task_obj_indices_.append(tasks['cand_obj_index'])
+        self.task_obj_labels_.append(tasks['cand_obj_label'])
+
+    def create_env_tasks(self, env_idx):
+        '''
+        기존: 모든 env 만들어두고 env마다 task 하나씩 랜덤하게 뽑아서 할당
+        변경: 안정화 상태인 env 하나만 만들어서 task 하나씩 할당
+        '''
         init_root_states = self.get_scene_init_root_states()
         init_obj_labels = self.get_scene_init_obj_labels()
         init_camera_poses = self.get_camera_init_states()
         assert len(init_root_states) == len(init_obj_labels) == len(init_camera_poses)
 
-        task_actor_states, task_obj_indices, task_obj_labels, task_camera_poses = [], [], [], []
-        obj_indices_, task_labels_ = [], []
-        for k in range(len(init_root_states)):
-            obj_indices, task_labels = self.get_obj_tasks(init_obj_labels[k])
-            # target random하게 target obj 선택
-            i = random.randrange(len(obj_indices))
-            idx, label = obj_indices[i], task_labels[i]
+        # for i in env_idx:
+        # print("len init_root_states: ", len(init_root_states))
 
-            task_actor_states.append(init_root_states[k])
-            task_obj_indices.append(idx)
-            task_obj_labels.append(label)
-            task_camera_poses.append(init_camera_poses[k])
-            obj_indices_.append(obj_indices)
-            task_labels_.append(task_labels)
+        # 안정화 상태에 대한 env 하나만 받기 때문에 k=0으로 고정 
+            # obj_indices, task_labels = self.get_obj_tasks(init_obj_labels[k])
+        obj_indices, task_labels = self.get_obj_tasks(init_obj_labels[env_idx])
+
+        # target random하게 target obj 선택
+        k = random.randrange(len(obj_indices))
+        idx, label = obj_indices[k], task_labels[k]
+        # print("len init_root_states: ", len(init_root_states))
+        # print("use env_idx: ", env_idx)
+        print(f"scene_{env_idx}: obj_indices: {obj_indices}")
+        # print("create_env_tasks - self.obj_indices_: ", self.obj_indices_)
         return {
-            'task_init_state': task_actor_states,
-            'task_obj_index': task_obj_indices,
-            'task_obj_label': task_obj_labels,
-            'task_camera_pose': task_camera_poses,
-            'task_cand_obj_index': obj_indices_, 
-            'task_cand_obj_label': task_labels_ 
+            # IMPORTANT: return only the current env's task.
+            # If we return the accumulated lists here, `append_task()` will
+            # re-extend previously appended items and cause duplication
+            # (e.g., [first] then [first, second] -> [first, first, second]).
+            'init_state': init_root_states[env_idx],
+            'obj_index': idx,
+            'obj_label': label,
+            'camera_pose': init_camera_poses[env_idx],
+            'cand_obj_index': obj_indices,
+            'cand_obj_label': task_labels
         }
 
     def get_obj_tasks(self, obj_labels):
@@ -453,12 +514,14 @@ class InfiniSceneLoader(object):
         self._num_compositions = len(self.scene_pose)
 
     def load_task_config(self):
-        task_config = np.load(f'{self._path}/task_config.npz')
+        task_config = np.load(f'{self._path}/task_config.npz', allow_pickle=True)
         return {
             'task_init_state': task_config['task_init_state'],
             'task_obj_index': task_config['task_obj_index'],
             'task_obj_label': task_config['task_obj_label'],
-            'task_camera_pose': task_config['task_camera_pose']
+            'task_camera_pose': task_config['task_camera_pose'],
+            'task_cand_obj_index': task_config['task_cand_obj_index'],
+            'task_cand_obj_label': task_config['task_cand_obj_label']
         }
 
     def get_camera_init_states(self):
