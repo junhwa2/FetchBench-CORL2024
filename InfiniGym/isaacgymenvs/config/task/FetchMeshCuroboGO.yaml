@@ -7,7 +7,6 @@ defaults:
     - FetchBase
     - _self_
 
-
 viewer:
   camPos: [-2.0, 1.5, 2.5]
   camTar: [0, 0, 0.7]
@@ -31,7 +30,7 @@ env:
   
   ## copied from FetchPointCloudBase.yaml ##
   cam:
-    num_cam: 2
+    num_cam: 1
     width: 640
     height: 480
     hov: 70
@@ -66,10 +65,10 @@ solution:
   grasp_label:
     gripper_type: cvx
     use_flex_label: False
-    use_isaac_force_label: True
+    use_isaac_force_label: True # isaac_label_cvx_4part.npy force_label
     use_isaac_success_label: False
 
-  init_steps: 20
+  init_steps: 120 # 20
   eval_steps: 600
   gripper_steps: 90
 
@@ -77,26 +76,57 @@ solution:
   move_offset_method: cartesian_linear
   video_freq: 8
 
-  direct_grasp: False
-  pre_grasp_offset: 0.04
-  retract_offset: 0.02
-  grasp_overshoot_ratio: 1.05
-  disable_grasp_obj_ik_collision: False
-  disable_grasp_obj_motion_gen: False
-  attach_goal_obj: True
+  # direct_grasp: False
+  # pre_grasp_offset: 0.04
+  # retract_offset: 0.02
+  # grasp_overshoot_ratio: 1.05
+  # disable_grasp_obj_ik_collision: False
+  # disable_grasp_obj_motion_gen: False
+  # attach_goal_obj: True
 
-  num_step_repeat_per_plan_dt: 2 # usually motion_interpolation_dt / sim_dt
-  num_osc_repeat: 12
-  num_cartesian_steps: 5
+  # num_step_repeat_per_plan_dt: 2 # usually motion_interpolation_dt / sim_dt
+  # num_osc_repeat: 12
+  # num_cartesian_steps: 5
 
 obs_data_gen:
-  max_grasp_pose: 200
-  max_grasp_pose_per_object: 100
-  
-  max_num_task_obj_cand: 25
+  debug_viz: False
+  obs_path: 'Obstruction_mini_test'
 
+  max_grasp_pose: 500
+  max_grasp_pose_per_object: 100
+
+  forward_bias_mode: linear                  # options: {linear, softmax, uniform}
+  forward_bias_softmax_temperature: 0.5      # smaller -> sharper bias toward far obj; larger -> uniform (only used when mode==softmax)
+
+  # Pre-collision: global pose dedup (uses pose floors below as quality floor)
+  filter_global_after_ik: True               # toggle the global FPS pass
+  filter_global_max_per_obj: 25              # target cap = num_cand_obj * this
+  filter_global_max_min: 75                  # absolute lower bound for the cap
+  filter_global_max_max: 200                 # absolute upper bound for the cap
+  filter_pose_pos_floor: 0.04                # m  (used as global FPS pose-pos quality floor)
+  filter_pose_rot_floor: 0.3                 # rad (used as global FPS pose-rot quality floor)
+
+  # Post-collision: per-(collision-pattern)-group cap + clean ratio cap
+  filter_max_per_group: 8                    # FPS hard cap per collision-pattern group
+  filter_clean_max_ratio: 0.5                # clean grasps <= this fraction of total final M
+  filter_cap_floor: 0.5                      # FPS floor for (2)(3); fraction of pose floor (1.0 = full pose floor as in (1))
+
+  max_num_task_cand_obj: null # null means variable num_task_cand_obj across different tasks
+  
+  pc_new_id_method: 'valid' # options are {'all', 'valid'} 
   pc_bound_option: 'panda_w_gripper_sphere' # options are {'panda_cube', 'panda_sphere', 'panda_w_gripper_cube', 'panda_w_gripper_sphere'}
-  pc_voxel_size: 0.015
+  pc_voxel_size: 0.015 # downample voxel size
   mesh_sample_points: 100000
   mesh_sample_links: ["panda_link4", "panda_link5", "panda_link6", "panda_link7", 
                       "panda_hand", "panda_leftfinger", "panda_rightfinger"]
+  
+  robot_collision_model:
+    robot_path: "assets/urdf/franka_description/robots/franka_r3_cvx_pykin.urdf"
+    offset:
+      pos: [0, 0, 0]
+      rot: [1, 0, 0, 0]
+    has_gripper: True
+    gripper_name: "panda_r3_gripper"
+    base_name: "panda_link0"
+    eef_name: "panda_link7"
+    geom: "collision"

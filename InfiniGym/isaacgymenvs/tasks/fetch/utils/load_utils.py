@@ -434,12 +434,16 @@ class InfiniSceneLoader(object):
         self._num_compositions = len(self.scene_pose)
 
     def load_task_config(self):
-        task_config = np.load(f'{self._path}/task_config.npz')
+        task_config = np.load(f'{self._path}/task_config.npz', allow_pickle=True)
+        keys = set(task_config.files)
+
         return {
             'task_init_state': task_config['task_init_state'],
             'task_obj_index': task_config['task_obj_index'],
             'task_obj_label': task_config['task_obj_label'],
-            'task_camera_pose': task_config['task_camera_pose']
+            'task_camera_pose': task_config['task_camera_pose'],
+            'task_cand_obj_index': task_config['task_cand_obj_index'] if 'task_cand_obj_index' in keys else None,
+            'task_cand_obj_label': task_config['task_cand_obj_label'] if 'task_cand_obj_label' in keys else None,
         }
 
     def get_camera_init_states(self):

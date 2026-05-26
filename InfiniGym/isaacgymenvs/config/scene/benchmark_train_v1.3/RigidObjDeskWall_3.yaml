@@ -1,0 +1,4 @@
+name: RigidObjDeskWall_3
+scene_list:
+- benchmark_train/DeskWall/DeskWallSceneFactory_26
+num_tasks: 60

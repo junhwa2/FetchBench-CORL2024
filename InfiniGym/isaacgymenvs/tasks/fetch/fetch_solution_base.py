@@ -15,7 +15,6 @@ class FetchSolutionBase(FetchBase):
                  headless, virtual_screen_capture, force_render):
         super().__init__(cfg, rl_device, sim_device, graphics_device_id,
                          headless, virtual_screen_capture, force_render)
-
         self._init_steps = self.cfg["solution"]["init_steps"]
         self._eval_steps = self.cfg["solution"]["eval_steps"]
 
@@ -211,6 +210,7 @@ class FetchSolutionBase(FetchBase):
         state = self._get_pose_in_robot_frame()
         eef_pos = state['eef']['pos'].to(self.device)
         eef_quat = state['eef']['quat'].to(self.device)
+        print(f"follow_cartesian_linear_motion | eef_pos: {eef_pos} | eef_quat: {eef_quat}", )
 
         current_pose = Pose(
             position=eef_pos, quaternion=torch.concat([eef_quat[:, -1:], eef_quat[:, :-1]], dim=-1)
@@ -252,6 +252,9 @@ class FetchSolutionBase(FetchBase):
         else:
             gripper_command = gripper_state * torch.ones((self.num_envs,), device=self.device)
 
+        cmd_poses = []
+        curr_poses = []
+        err_poses = []
         for step in range(len(target_poses)):
             for i in range(self.cfg["solution"]["num_osc_repeat"]):
                 command = {
@@ -266,7 +269,7 @@ class FetchSolutionBase(FetchBase):
                 rgb, seg = self.get_camera_image(rgb=True, seg=False)
                 self.log_video(rgb)
 
-            if self.debug_viz and self.viewer is not None:
+                # if self.debug_viz and self.viewer is not None:
                 curr_pose = self._get_pose_in_robot_frame()['eef']
                 cmd_pos = command['eef_pos']
                 cmd_quat = command['eef_quat']
@@ -276,9 +279,56 @@ class FetchSolutionBase(FetchBase):
                 err_pos = torch.norm(cmd_pos - curr_pos, dim=-1)
                 err_quat = quat_mul(cmd_quat, quat_conjugate(curr_quat))
                 err_rot = torch.norm(err_quat[..., :3], dim=-1)
-                print(f'Step {step}:', err_pos, err_rot)
+                # print(f'Step {step}:', err_pos, err_rot)
+                
+                # print("cmd_pos:", cmd_pos.shape, ", cmd_quat:", cmd_quat.shape)
+                # print("err_pos:", err_pos.shape, ", err_rot:", err_rot.shape)
+                cmd_poses.append(torch.concat((cmd_pos, cmd_quat), dim=1))
+                curr_poses.append(torch.concat((curr_pos, curr_quat), dim=1))
+                err_poses.append(torch.concat((err_pos, err_rot), dim=0))
+        
+        # Plot
+        trajs = [
+            torch.stack(cmd_poses).cpu().numpy(),
+            torch.stack(curr_poses).cpu().numpy(),
+            torch.stack(err_poses).cpu().numpy()
+        ]
+        # plot_trajs(trajs, self.dt)
 
         # switch back to default control
         self.arm_control_type = old_arm_control_type
         self.switch_arm_control_type('joint')
+
+
+def plot_trajs(trajs, dt):
+    # Third Party
+    import matplotlib.pyplot as plt
+
+    _, axs = plt.subplots(3, 1)
+    
+    cmd_traj = trajs[0]
+    curr_traj = trajs[1]
+    err_traj = trajs[2]
+    print("cmd_traj shape:", cmd_traj.shape)
+    print("curr_traj shape:", curr_traj.shape)
+    print("err_traj shape:", err_traj.shape)
+    timesteps = [i * dt for i in range(err_traj.shape[0])]
+    
+    for i in range(2, 3):
+        axs[0].plot(timesteps, cmd_traj[:, 0, i], label=f"cmd{i}", linestyle='-')
+        axs[0].plot(timesteps, curr_traj[:, 0, i], label=f"curr{i}", linestyle='--')
+    axs[0].legend()
+    axs[0].set_title("cmd vs curr (pos)")
+    
+    for i in range(3, 7):
+        axs[1].plot(timesteps, cmd_traj[:, 0, i], label=f"cmd{i}", linestyle='-')
+        axs[1].plot(timesteps, curr_traj[:, 0, i], label=f"curr{i}", linestyle='--')
+    axs[1].legend()
+    axs[1].set_title("cmd vs curr (quat)")
+    
+    for i in range(err_traj.shape[-1]):
+        axs[2].plot(timesteps, err_traj[:, i], label=f"err{i}")
+    axs[2].legend()
+    axs[2].set_title("error")
+    plt.show()
 

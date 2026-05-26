@@ -18,6 +18,11 @@ from .fetch.imit.fetch_ptd_imit_curobo_cgn import FetchPtdImitCuroboCGN
 
 # GO
 from .fetch.fetch_mesh_curobo_go import FetchMeshCuroboGO
+from .fetch.fetch_mesh_curobo_go_run import FetchMeshCuroboGORun
+
+# Cabinet
+from .fetch.fetch_ptd_cabinet import FetchPtdCabinet
+from .fetch.fetch_ptd_cabinet_cgn_beta import FetchPtdCabinetCGNBeta
 
 isaacgym_task_map = {
     "FetchBase": FetchBase,
@@ -37,6 +42,10 @@ isaacgym_task_map = {
     "FetchPtdImitCuroboCGN": FetchPtdImitCuroboCGN,
     
     "FetchMeshCuroboGO": FetchMeshCuroboGO,
+    "FetchMeshCuroboGORun": FetchMeshCuroboGORun,
+    
+    "FetchPtdCabinet": FetchPtdCabinet,
+    "FetchPtdCabinetCGNBeta": FetchPtdCabinetCGNBeta,
 }
 
 
@@ -64,6 +73,10 @@ try:
         "FetchMeshCuroboPtdCGNBeta": FetchMeshCuroboPtdCGNBeta,
         
         "FetchMeshCuroboGO": FetchMeshCuroboGO,
+        "FetchMeshCuroboGORun": FetchMeshCuroboGORun,
+        
+        "FetchPtdCabinet": FetchPtdCabinet,
+        "FetchPtdCabinetCGNBeta": FetchPtdCabinetCGNBeta,
     }
 
 except:
@@ -78,9 +91,9 @@ try:
     from .fetch.fetch_ptd_pyompl import FetchPtdPyompl
     from .fetch.repeat.fetch_ptd_pyompl_rep import FetchPtdPyomplRep
 
-    # Cabinet
-    from .fetch.fetch_ptd_cabinet import FetchPtdCabinet
-    from .fetch.fetch_ptd_cabinet_cgn_beta import FetchPtdCabinetCGNBeta
+    # # Cabinet
+    # from .fetch.fetch_ptd_cabinet import FetchPtdCabinet
+    # from .fetch.fetch_ptd_cabinet_cgn_beta import FetchPtdCabinetCGNBeta
 
     # Contact_Graspnet_Pytorch
     from .fetch.fetch_ptd_curobo_cgn_beta import FetchPtdCuroboCGNBeta
@@ -115,9 +128,6 @@ try:
         "FetchMeshCuroboPtdCGNBeta": FetchMeshCuroboPtdCGNBeta,
         "FetchMeshPyomplPtdCGNBeta": FetchMeshPyomplPtdCGNBeta,
 
-        "FetchPtdCabinet": FetchPtdCabinet,
-        "FetchPtdCabinetCGNBeta": FetchPtdCabinetCGNBeta,
-
         "FetchMeshCuroboPtdCGNBetaRep": FetchMeshCuroboPtdCGNBetaRep,
         "FetchPtdCuroboCGNBetaRep": FetchPtdCuroboCGNBetaRep,
         "FetchPtdPyomplCGNBetaRep": FetchPtdPyomplCGNBetaRep,
@@ -127,6 +137,7 @@ try:
         "FetchPtdImitCuroboCGN": FetchPtdImitCuroboCGN,
         
         "FetchMeshCuroboGO": FetchMeshCuroboGO,
+        "FetchMeshCuroboGORun": FetchMeshCuroboGORun,
     }
 
 except Exception as e:    # 모든 예외의 에러 메시지를 출력할 때는 Exception을 사용

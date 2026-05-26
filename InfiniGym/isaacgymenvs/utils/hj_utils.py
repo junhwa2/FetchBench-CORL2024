@@ -51,49 +51,143 @@ def flatten_dict(d, parent_key='', sep=':'):
 
 
 # ---------------------------------------------------------
-# Main function: Convert npy file to CSV
-# - Adds "id" column (0..N-1)
-# - Flattens nested structures
-# - Converts booleans to 1/0
+# Helpers for the new CSV layout
 # ---------------------------------------------------------
+def _flatten_value(key, val):
+    """Wrap a single (key, val) into a flat dict using flatten_dict."""
+    return flatten_dict({key: val})
+
+
+def _eval_success_bool(val):
+    """`data['success'][i]` may be a scalar, list, or ndarray (per env)."""
+    arr = np.asarray(val).flatten()
+    if arr.size == 0:
+        return None
+    return bool(arr.astype(bool).any())
+
+
+# ---------------------------------------------------------
+# Main function: Convert npy file to CSV
+# Layout:
+#   id, success (combined plan ∧ execution), label,
+#   plan_success, plan_failure (only when not ok),
+#   step{k}_success, step{k}_failure, step{k}_<other metrics>, ...
+# - Columns that end up entirely empty/None across rows are dropped.
+# - `*_status='ok'` semantics are converted to `*_success=1` (0 otherwise);
+#   the original non-ok reason is preserved under `*_failure`.
+# - The top-level `extra` dict is inlined (no `extra:` prefix).
+# ---------------------------------------------------------
+_STEP_KEEP_NAMES = (
+    "plan_success", "plan_failure",
+    "execute_success", "execute_failure",
+)
+
+
+def _is_kept_step_col(key):
+    """Step{k}_* keys we keep in the CSV: plan/execute success/failure only.
+
+    Exact-name match on what follows `step{k}_` so we don't accidentally keep
+    debug metrics like `step0_grasp_plan_success` or `step0_fetch_plan_failure`.
+    """
+    if not key.startswith("step"):
+        return False
+    prefix = key.split("_", 1)[0]
+    if not (prefix.startswith("step") and prefix[4:].isdigit()):
+        return False
+    rest = key[len(prefix) + 1:]  # strip "step{k}_"
+    return rest in _STEP_KEEP_NAMES
+
+
 def npy_to_csv(npy_path, csv_path):
-    raw = np.load(npy_path, allow_pickle=True)
-
-    # Expect 0D ndarray that contains a dictionary
-    data = raw.item()
-
-    # Determine number of rows (test count)
+    data = np.load(npy_path, allow_pickle=True).item()
     num_rows = len(next(iter(data.values())))
 
     rows = []
     for i in range(num_rows):
-        row = {"id": i}  # First column: auto increment ID
+        row = {"id": i}
 
-        for key, val_list in data.items():
-            val = val_list[i]
+        extra = data["extra"][i] if "extra" in data and i < len(data["extra"]) else {}
 
-            # Nested dictionary → flatten
-            if isinstance(val, dict):
-                row.update(flatten_dict(val, key))
+        # Top-level: combined success comes from base eval (overridden by our
+        # planner-aware eval to mean `motion_plan_success AND planner_held`).
+        row["success"] = (int(_eval_success_bool(data["success"][i]))
+                          if "success" in data else None)
 
-            # Scalar or array-like value
-            else:
-                arr = np.array(val, dtype=object)
-                if arr.size == 1:
-                    row[key] = convert_bool(arr.reshape(-1)[0])
-                else:
-                    converted = [convert_bool(x) for x in arr.tolist()]
-                    row[key] = ",".join(map(str, converted))
+        # bc_plan_completed = # of plan steps whose execute_success=1.
+        # progress          = bc_plan_completed / bc_plan_length (float in [0,1]).
+        # Both left as None when plan length is missing/zero.
+        bc_len = extra.get("bc_plan_length")
+        if isinstance(bc_len, (int, np.integer)) and bc_len > 0:
+            n_ok = sum(
+                1 for k, v in extra.items()
+                if k.startswith("step")
+                and k.split("_", 1)[0][4:].isdigit()
+                and k[len(k.split("_", 1)[0]) + 1:] == "execute_success"
+                and bool(convert_bool(v))
+            )
+            row["progress"]          = float(n_ok) / float(int(bc_len))
+            row["bc_plan_completed"] = int(n_ok)
+        else:
+            row["progress"]          = None
+            row["bc_plan_completed"] = None
+
+        # Planner pipeline flags — written by solve(); always present once
+        # the planner-aware branch has run.
+        for k in ("bc_plan_length", "bc_plan_time",
+                  "target_exist", "bc_plan_exist", "motion_plan_success"):
+            if k in extra:
+                row[k] = extra[k]
+
+        # The compact plan trace, if any.
+        if isinstance(extra.get("plan"), list):
+            row["plan"] = " -> ".join(
+                f"{int(o)}:[{','.join(str(int(g)) for g in gs)}]"
+                for o, gs in extra["plan"]
+            )
+
+        # Per-step: only plan_success/plan_failure/execute_success/execute_failure.
+        for k, v in extra.items():
+            if _is_kept_step_col(k):
+                row[k] = convert_bool(v) if not isinstance(v, str) else v
 
         rows.append(row)
 
-    # Create DataFrame
     df = pd.DataFrame(rows)
 
-    # Ensure "id" is the first column
-    df = df[["id"] + [c for c in df.columns if c != "id"]]
+    # Drop columns that are entirely empty across rows.
+    def _all_empty(series):
+        as_str = series.astype("object").apply(
+            lambda x: "" if x is None or (isinstance(x, float) and np.isnan(x)) else str(x)
+        )
+        return as_str.replace({"None": "", "nan": ""}).eq("").all()
 
-    # Save CSV
+    df = df.loc[:, [c for c in df.columns if not _all_empty(df[c])]]
+
+    # Reorder: id, success, bc_plan_length, bc_plan_time, then planner flags,
+    # then step{k}_* grouped (numeric step order, within-step in suffix order),
+    # then plan trace + anything else.
+    leading = [c for c in [
+        "id", "success", "progress",
+        "bc_plan_completed", "bc_plan_length", "bc_plan_time",
+        "target_exist", "bc_plan_exist", "motion_plan_success",
+    ] if c in df.columns]
+
+    def _step_sort_key(c):
+        prefix = c.split("_", 1)[0]
+        step_n = int(prefix[4:]) if prefix[4:].isdigit() else 1_000_000
+        rest = c[len(prefix) + 1:]
+        suf_order = (_STEP_KEEP_NAMES.index(rest)
+                     if rest in _STEP_KEEP_NAMES
+                     else len(_STEP_KEEP_NAMES))
+        return (step_n, suf_order, c)
+
+    step_cols = sorted(
+        [c for c in df.columns if c.startswith("step") and _is_kept_step_col(c)],
+        key=_step_sort_key,
+    )
+    rest = [c for c in df.columns if c not in leading and c not in step_cols]
+    df = df[leading + step_cols + rest]
+
     df.to_csv(csv_path, index=False)
     print(f"Saved CSV to: {csv_path}")
 

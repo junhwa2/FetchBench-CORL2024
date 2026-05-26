@@ -11,10 +11,29 @@ InfiniGym/logs
 InfiniGym/videos
 
 # HJ added
-.vscode
 asset_release
 asset_release_v1
 asset_release_v1.1
+asset_release_v1.2
+asset_release_v1.3
+InfiniGym/isaacgymenvs/config/scene/benchmark_eval_v1.1/
+InfiniGym/isaacgymenvs/config/scene/benchmark_eval_v1.2/
+InfiniGym/isaacgymenvs/config/scene/benchmark_train_v1.1/
+InfiniGym/isaacgymenvs/config/scene/benchmark_train_v1.2/
+
 InfiniGym/images
+InfiniGym/log*/
+InfiniGym/runs
+InfiniGym/videos
+scene_images/
+logs/
+
 scripts
+plot_pr_curve.py
 *.sh
+
+.vscode
+.claude/
+.codex
+CLAUDE.md
+fetchbench_cabinet.md

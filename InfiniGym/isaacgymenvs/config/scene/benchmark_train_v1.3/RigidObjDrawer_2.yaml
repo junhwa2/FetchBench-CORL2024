@@ -1,0 +1,4 @@
+name: RigidObjDrawer_2
+scene_list:
+- benchmark_train/Drawer/DrawerSceneFactory_28
+num_tasks: 60

@@ -1,4 +1,21 @@
 # ChangeLog
+## 2026-05-01
+export PYTHONPATH=/home/jo/HJ/FetchBench-CORL2024/InfiniGym:$PYTHONPATH
+
+## 2026-04-xx
+python isaacgymenvs/obs_data_gen.py task=FetchMeshCuroboGO scene=benchmark_eval_v1.1/RigidObjCellShelfDesk_0 headless=True task.obs_data_gen.debug_viz=True
+
+scripts/validate_and_build_obs_metadata.py
+
+
+## 2026-04-xx
+### Run with asset_release_v1.1
+```
+export ASSET_PATH=/home/jo/HJ/FetchBench-CORL2024/asset_release_v1.1
+<!-- python isaacgymenvs/eval.py task=FetchMeshCuroboGO scene=benchmark_train/RigidObjDoubleDoorCabinet_0 -->
+python isaacgymenvs/eval.py task=FetchMeshCuroboGO scene.name=RigidObjDoubleDoorCabinet_0 scene.scene_list=[benchmark_train/DoubleDoorCabinet/DoubleDoorCabinetSceneFactory_40] scene.num_tasks=50 headless=True
+```
+
 ## 2026-04-01
 - Added new dataset: `asset_release_v1_obs` (https://kist.gov-dooray.com/project/drive-files/4300558259664061648?fileType=file)
 - Added new task `FetchMeshCuroboGO` for generating Grasp Obstruction dataset

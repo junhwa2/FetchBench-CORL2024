@@ -1,0 +1,4 @@
+name: RigidObjEketShelf_0
+scene_list:
+- benchmark_train/EketShelf/EketShelfSceneFactory_0
+num_tasks: 60

@@ -1,6 +1,7 @@
 
 import numpy as np
 import os
+import shlex
 # import torch
 import imageio
 import trimesh.transformations as tra
@@ -67,8 +68,8 @@ class FetchBase(VecTask):
         self.task_camera_init_state = []
         self.task_obj_label = []
         self.task_obj_index = []
-        self.task_obj_cand_label = []
-        self.task_obj_cand_index = []
+        self.task_cand_obj_label = []
+        self.task_cand_obj_index = []
         self._task_idx = -1
         self.task_obj_color = gymapi.Vec3(1.0, 0.0, 0.0)
         self.default_obj_color = gymapi.Vec3(0.0, 0.0, 1.0)
@@ -171,6 +172,53 @@ class FetchBase(VecTask):
 
         return scene_asset, table_asset, object_asset, combo_asset, cam_params, loader
 
+    def _ensure_missing_textures(self, asset_root):
+        """Create tiny placeholder textures for missing files referenced by .mtl files."""
+        if not os.path.isdir(asset_root):
+            return
+
+        texture_keys = {
+            "map_Ka", "map_Kd", "map_Ks", "map_Ke", "map_Bump", "bump", "disp", "decal", "refl"
+        }
+        placeholder = np.array([[[127, 127, 127]]], dtype=np.uint8)
+
+        for root, _, files in os.walk(asset_root):
+            for name in files:
+                if not name.lower().endswith(".mtl"):
+                    continue
+                mtl_path = os.path.join(root, name)
+                try:
+                    with open(mtl_path, "r", encoding="utf-8", errors="ignore") as f:
+                        lines = f.readlines()
+                except OSError:
+                    continue
+
+                for line in lines:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = shlex.split(line)
+                    if len(parts) < 2 or parts[0] not in texture_keys:
+                        continue
+
+                    # Skip option flags (e.g., -s, -o, -clamp) and take the final path token.
+                    tex_rel = parts[-1]
+                    tex_path = os.path.normpath(os.path.join(root, tex_rel))
+                    if os.path.exists(tex_path):
+                        continue
+
+                    tex_dir = os.path.dirname(tex_path)
+                    if tex_dir and not os.path.exists(tex_dir):
+                        os.makedirs(tex_dir, exist_ok=True)
+
+                    ext = os.path.splitext(tex_path)[1].lower()
+                    if ext in {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}:
+                        try:
+                            imageio.imwrite(tex_path, placeholder)
+                        except Exception:
+                            # Best-effort fallback; skip files we cannot write.
+                            pass
+
     def load_robot_asset(self):
         # load robot asset
         asset_options = gymapi.AssetOptions()
@@ -246,6 +294,7 @@ class FetchBase(VecTask):
 
     def load_object_asset(self, config):
         obj = load_env_object(config)
+        self._ensure_missing_textures(obj['asset_root'])
 
         asset_options = gymapi.AssetOptions()
         asset_options.thickness = 0.0
@@ -253,7 +302,8 @@ class FetchBase(VecTask):
         asset_options.collapse_fixed_joints = True
         asset_options.density = config['density']
         asset_options.default_dof_drive_mode = gymapi.DOF_MODE_NONE
-        asset_options.use_mesh_materials = True
+        # Some released assets reference missing texture files; disable mesh materials to avoid load failures.
+        asset_options.use_mesh_materials = False
         asset_options.override_inertia = True
         asset_options.override_com = True
         if self.cfg["env"]["objects"]["add_damping"]:
@@ -286,6 +336,7 @@ class FetchBase(VecTask):
 
     def load_combo_asset(self, config):
         combo = load_env_object_combo(config)
+        self._ensure_missing_textures(combo['asset_root'])
 
         assets = []
         for i, obj in enumerate(combo['urdf_file']):
@@ -295,7 +346,8 @@ class FetchBase(VecTask):
             asset_options.collapse_fixed_joints = True
             asset_options.density = config['density']  # default = 1000.0
             asset_options.default_dof_drive_mode = gymapi.DOF_MODE_NONE
-            asset_options.use_mesh_materials = True
+            # Same reason as load_object_asset: skip external texture dependency.
+            asset_options.use_mesh_materials = False
             asset_options.override_inertia = True
             asset_options.override_com = True
             if self.cfg["env"]["objects"]["add_damping"]:
@@ -592,7 +644,12 @@ class FetchBase(VecTask):
                 object_ref_points.append(apply_transform(cbo['metadata']['organizer_com'], combo_transform))
                 object_grasp_poses.append(None)
 
-                self.gym.set_rigid_body_color(env_ptr, org_actor, 0, gymapi.MESH_VISUAL, self.default_obj_color)
+                # `preserve_obj_material` keeps the URDF/mesh material visible
+                # (use_mesh_materials=True already loaded it). Default False
+                # paints every obj solid `default_obj_color` for legacy tasks
+                # whose set_target_color/set_default_color round-trip blue↔red.
+                if not self.cfg["env"].get("preserve_obj_material", False):
+                    self.gym.set_rigid_body_color(env_ptr, org_actor, 0, gymapi.MESH_VISUAL, self.default_obj_color)
 
                 obj_start_pose = vec_state_to_pose(loader.object_poses[0][2*k+1])
                 obj_actor = self.gym.create_actor(env_ptr, cbo['asset'][1], obj_start_pose,
@@ -601,7 +658,8 @@ class FetchBase(VecTask):
                 object_actors.append(obj_actor)
                 object_ref_points.append(apply_transform(cbo['metadata']['object_com'], combo_transform))
                 object_grasp_poses.append(None)   # Todo: Add sample Grasp Poses.
-                self.gym.set_rigid_body_color(env_ptr, obj_actor, 0, gymapi.MESH_VISUAL, self.default_obj_color)
+                if not self.cfg["env"].get("preserve_obj_material", False):
+                    self.gym.set_rigid_body_color(env_ptr, obj_actor, 0, gymapi.MESH_VISUAL, self.default_obj_color)
 
             idx_offset = len(combo_assets) * 2
             # add rigid objects
@@ -618,8 +676,10 @@ class FetchBase(VecTask):
                 q, t = matrix_to_q_t(grasps)
                 object_grasp_poses.append(torch.concat([t, q], dim=-1))
 
-                # set default color
-                self.gym.set_rigid_body_color(env_ptr, object_actor, 0, gymapi.MESH_VISUAL, self.default_obj_color)
+                # set default color (skipped when preserve_obj_material=True;
+                # see comment above on the combo branch).
+                if not self.cfg["env"].get("preserve_obj_material", False):
+                    self.gym.set_rigid_body_color(env_ptr, object_actor, 0, gymapi.MESH_VISUAL, self.default_obj_color)
 
             # add env cams
             cams = []
@@ -666,11 +726,13 @@ class FetchBase(VecTask):
         self.task_camera_init_state.append(task_config['task_camera_pose'][:num_tasks])
         self.task_obj_index.append(task_config['task_obj_index'][:num_tasks])
         self.task_obj_label.append(task_config['task_obj_label'][:num_tasks].tolist())
-        ####### MUST remove this from v1.1 ##########
-        task_obj_cand_index, task_obj_cand_label = loader.get_obj_tasks(loader.object_labels[0])
-        self.task_obj_cand_index = [task_obj_cand_index] * num_tasks 
-        self.task_obj_cand_label = [task_obj_cand_label] * num_tasks
-        ##########################################
+        if task_config['task_cand_obj_index'] is None:
+            task_cand_obj_index, task_cand_obj_label = loader.get_obj_tasks(loader.object_labels[0])
+            self.task_cand_obj_index.append([task_cand_obj_index] * num_tasks)
+            self.task_cand_obj_label.append([task_cand_obj_label] * num_tasks)
+        else:
+            self.task_cand_obj_index.append(task_config['task_cand_obj_index'][:num_tasks])
+            self.task_cand_obj_label.append(task_config['task_cand_obj_label'][:num_tasks].tolist())
 
     def init_rb_index_map(self):
         rb_map = {}

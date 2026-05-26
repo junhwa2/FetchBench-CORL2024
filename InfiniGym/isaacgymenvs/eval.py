@@ -21,6 +21,12 @@ from isaacgymenvs.utils.hj_utils import npy_to_csv
 
 
 def log_videos(path, idx, videos, fps=10):
+    # solve() can legitimately return an empty list (e.g. early-return paths
+    # in some tasks, or stubs without grasp/motion execution wired up). np.stack
+    # would crash on []; skip the write with a notice instead.
+    if not videos:
+        print(f"[log_videos] no frames for task {idx} at {path}/log_{idx}.mp4 — skipped")
+        return
     if not os.path.exists(f'{path}'):
         os.makedirs(f'{path}')
 
@@ -36,15 +42,10 @@ def log_first_frame(path, idx, videos):
 def log_results(path, results):
     count, success = 0, 0
 
-    log = {
-        'z_threshold': [],
-        'x_threshold': [],
-        'e_threshold': [],
-        'success': [],
-        'label': [],
-        'task_repeat': [],
-        'extra': []
-    }
+    # Accept whatever keys each task's eval() returns (planner-aware tasks
+    # add extra fields like `planner_*`). defaultdict avoids KeyError.
+    from collections import defaultdict
+    log = defaultdict(list)
 
     for i, res in enumerate(results):
         count += np.product(*np.array(res['success']).shape)
@@ -52,6 +53,7 @@ def log_results(path, results):
 
         for k, v in res.items():
             log[k].append(v)
+    log = dict(log)
 
     print("Success Rate: ", success / count)
 

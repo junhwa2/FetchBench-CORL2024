@@ -226,6 +226,7 @@ class FetchMeshCurobo(FetchSolutionBase):
         return padded_trajs
 
     def _get_cuRobo_robot_config(self):
+        robot_config_path = join_path(get_robot_configs_path(), "franka_r3.yml")
         robot_config = load_yaml(join_path(get_robot_configs_path(), "franka_r3.yml"))["robot_cfg"]
         robot_cuRobo_cfg = RobotConfig.from_dict(robot_config)
         robot_cuRobo_cfg.cspace.velocity_scale *= self.cfg['solution']['cuRobo']['velocity_scale']
@@ -247,7 +248,6 @@ class FetchMeshCurobo(FetchSolutionBase):
 
         world_config_list = []
         for i in range(self.num_envs):
-
             # add scene asset
             scene_meshes = []
             for j, f in enumerate(self.scene_asset[i]["files"]):
@@ -287,7 +287,6 @@ class FetchMeshCurobo(FetchSolutionBase):
                 cuboid=[t_cube]
             )
             world_config_list.append(world_config)
-
         return world_config_list
 
     """
@@ -420,9 +419,11 @@ class FetchMeshCurobo(FetchSolutionBase):
 
     def sample_goal_obj_collision_free_grasp_pose(self):
         # Use IK solver to solve for candidate grasp pose
-        annotated_grasp_pose = self._sample_goal_obj_annotated_grasp_pose()
+        annotated_grasp_pose = self._sample_goal_obj_annotated_grasp_pose() # shape: (num_env, max_seed, 7)
 
+        # Base boolean True mask to combine IK success with additional per-env validity checks.
         result_holder = torch.ones((self.num_envs, 1), device=self.tensor_args.device, dtype=torch.bool)
+        # Per-env default joint template used as a safe IK fallback (including gripper joints).
         ik_holder = (self.robot_default_dof_pos.unsqueeze(0).repeat(self.num_envs, 1).to(self.tensor_args.device)).unsqueeze(1)
 
         grasp_poses, pre_grasp_poses = [], []
@@ -439,15 +440,15 @@ class FetchMeshCurobo(FetchSolutionBase):
             pre_grasp_offset_quat = to_torch([1, 0, 0, 0], device=self.tensor_args.device, dtype=torch.float)
             pre_grasp_offset_quat = pre_grasp_offset_quat.unsqueeze(dim=0).repeat(self.num_envs, 1)
             pre_grasp_offset = Pose(pre_grasp_offset_pos, pre_grasp_offset_quat)
-            pre_grasp_pose = grasp_pose.multiply(pre_grasp_offset)
+            pre_grasp_pose = grasp_pose.multiply(pre_grasp_offset) # shape: (num_env, 7)
 
             grasp_poses.append(grasp_pose)
             pre_grasp_poses.append(pre_grasp_pose)
 
-            ik_result = self.ik_solver.solve_batch_env(pre_grasp_pose)
-            torch.cuda.synchronize()
+            ik_result = self.ik_solver.solve_batch_env(pre_grasp_pose)  # ik_result: success (num_envs, 1), solution (num_envs, 1, dof)
+            torch.cuda.synchronize() # Synchronize to ensure async CUDA IK finishes before using results 
 
-            pre_grasp_success.append(result_holder & ik_result.success)
+            pre_grasp_success.append(result_holder & ik_result.success) # shape: (num_envs, 1)
 
         # Check collision-free IK at grasp pose (disable goal obj)
         if self.cfg["solution"]["disable_grasp_obj_ik_collision"]:
@@ -457,10 +458,15 @@ class FetchMeshCurobo(FetchSolutionBase):
             grasp_pose = grasp_poses[i]
             ik_result = self.ik_solver.solve_batch_env(grasp_pose)
             torch.cuda.synchronize()
+            
             grasp_success.append(result_holder & ik_result.success)
 
+            # ik_result.success: (num_envs, 1), ik_result.success.float().unsqueeze(-1): (num_envs, 1, 1)
+            # Falls back to default joints on IK failure to keep downstream motion inputs stable.
             ik = (ik_result.solution * ik_result.success.float().unsqueeze(-1) +
-                  (1. - ik_result.success.float().unsqueeze(-1)) * ik_holder[..., :-2])
+                  (1. - ik_result.success.float().unsqueeze(-1)) * ik_holder[..., :-2]) 
+            # ik: (num_envs, 1, dof), ik_holder[..., :-2]: (num_envs, 1, 2)
+            # Append gripper joint states from ik_holder.
             grasp_pose_ik.append(torch.concat([ik, ik_holder[..., -2:]], dim=-1))
 
         if self.cfg["solution"]["disable_grasp_obj_ik_collision"]:
@@ -468,17 +474,19 @@ class FetchMeshCurobo(FetchSolutionBase):
 
         grasp_poses, pre_grasp_poses = Pose.vstack(grasp_poses, dim=1), Pose.vstack(pre_grasp_poses, dim=1)
         grasp_success, pre_grasp_success = torch.cat(grasp_success, dim=1), torch.cat(pre_grasp_success, dim=1)
-        grasp_pose_ik = torch.cat(grasp_pose_ik, dim=1)
+        grasp_pose_ik = torch.cat(grasp_pose_ik, dim=1) # success grasp_pose?
 
         res = {
-            'grasp_poses': grasp_poses,
-            'pre_grasp_poses': pre_grasp_poses,
-            'grasp_success': grasp_success,
-            'pre_grasp_success': pre_grasp_success,
-            'grasp_ik': grasp_pose_ik
+            'grasp_poses': grasp_poses, # shape: (num_envs, max_seed, 7)
+            'pre_grasp_poses': pre_grasp_poses, # shape: (num_envs, max_seed, 7)
+            'grasp_success': grasp_success, # shape: (num_envs, max_seed)
+            'pre_grasp_success': pre_grasp_success, # shape: (num_envs, max_seed)
+            'grasp_ik': grasp_pose_ik # shape: (num_envs, max_seed, dof)
         }
-
-        if self.debug_viz and self.viewer:
+        input("vis?")
+        # if self.debug_viz and self.viewer:
+        if True:
+            print("Visualizing grasp poses and IK results in cuRobo debug viz...")
             pose = self._get_pose_in_robot_frame()
             for i in range(self.num_envs):
                 success_ik = torch.masked_select(grasp_pose_ik[i], mask=grasp_success[i].unsqueeze(-1))
@@ -487,10 +495,10 @@ class FetchMeshCurobo(FetchSolutionBase):
                 if len(success_ik) == 0:
                     ik_poses = None
                 else:
-                    ik_poses = self.ik_solver.fk(success_ik).ee_pose
+                    ik_poses = self.ik_solver.fk(success_ik).ee_pose # success
 
                 self.grasp_vis_debug(pose, grasp_poses[i], pre_grasp_poses[i], ik_poses, env_idx=i)
-
+        input("continue?")
         return res
 
     """
@@ -681,7 +689,38 @@ class FetchMeshCurobo(FetchSolutionBase):
     """
     Your Solution
     """
+    def solve_(self):
+        log = {}
 
+        self.set_target_color()
+        self._solution_video = []
+        self._video_frame = 0
+
+        for _ in range(self._init_steps):
+            self.env_physics_step()
+            self.post_phy_step()
+        
+        input("approach?")
+        offset = np.array([0, 0, self.cfg["solution"]["pre_grasp_offset"] *
+                                   self.cfg["solution"]["grasp_overshoot_ratio"]])
+        self.follow_cartesian_linear_motion(offset, gripper_state=0) ## [To-do]:: Check
+        print("Approach End")
+
+        input("close?")
+        self.close_gripper()
+        # log['grasp_finger_obj_contact'] = self.finger_goal_obj_contact() ## [To-do]:: Check
+        print("Gripper Close End")
+
+        input("retract?")
+        offset = np.array([0, 0, self.cfg["solution"]["retract_offset"]])
+        self.follow_cartesian_linear_motion(offset, gripper_state=-1, eef_frame=False) ## [To-do]:: Check
+        # log['retract_finger_obj_contact'] = self.finger_goal_obj_contact() ## [To-do]:: Check
+        print("Retract End")
+        
+        self.set_default_color()
+
+        return image_to_video(self._solution_video), log
+    
     def solve(self):
         # set goal obj color
         log = {}
@@ -694,7 +733,7 @@ class FetchMeshCurobo(FetchSolutionBase):
         for _ in range(self._init_steps):
             self.env_physics_step()
             self.post_phy_step()
-
+        
         # Sample Good Grasp Pose
         self.update_cuRobo_world_collider_pose()
         ik_result = self.sample_goal_obj_collision_free_grasp_pose()
@@ -715,7 +754,6 @@ class FetchMeshCurobo(FetchSolutionBase):
             log['grasp_execute_error'] = self.get_end_effect_error(poses)
 
         else:
-
             ik_success = ik_result['grasp_success'] & ik_result['pre_grasp_success']
             log['ik_plan_success'] = ik_success.any(dim=-1).cpu().numpy()
             start_time = time.time()
@@ -749,8 +787,10 @@ class FetchMeshCurobo(FetchSolutionBase):
                 print("Grasp Phase End")
 
             elif self.cfg["solution"]["move_offset_method"] == 'cartesian_linear':
+                print("================> q:", self.states["q"])
                 offset = np.array([0, 0, self.cfg["solution"]["pre_grasp_offset"] *
                                    self.cfg["solution"]["grasp_overshoot_ratio"]])
+                # input("here*****************")
                 self.follow_cartesian_linear_motion(offset, gripper_state=0)
         print("Grasp Phase End")
 
@@ -794,6 +834,11 @@ class FetchMeshCurobo(FetchSolutionBase):
         log['end_finger_obj_contact'] = self.finger_goal_obj_contact()
         print("Eval Phase End")
         self.set_default_color()
+        
+        print("len(self._solution_video)", len(self._solution_video), type(self._solution_video))
+        print("len(self._solution_video[0])", len(self._solution_video[0]), type(self._solution_video[0]))
+        print("len(self._solution_video[0][0])", len(self._solution_video[0][0]), type(self._solution_video[0][0]))
+        print("len(self._solution_video[0][0][0])", self._solution_video[0][0][0].shape, type(self._solution_video[0][0][0]))
 
         return image_to_video(self._solution_video), log
 
@@ -1011,20 +1056,24 @@ def plot_trajs(trajs, dt):
             timesteps = [i * dt for i in range(q.shape[0])]
             for i in range(q.shape[-1]):
 
-                axs[0].plot(timesteps, q[:, i], label=str(i), linestyle=linestyle)
-                axs[1].plot(timesteps, qd[:, i], label=str(i), linestyle=linestyle)
+                axs[0].plot(timesteps, q[:, i], label=f"q{i}_d", linestyle=linestyle)
+                axs[1].plot(timesteps, qd[:, i], label=f"qd{i}_d", linestyle=linestyle)
 
         else:
             linestyle = '--'
             timesteps = [i * dt for i in range(q.shape[0])]
             for i in range(q.shape[-1] - 2):
-                axs[0].plot(timesteps, q[:, i], label=str(i), linestyle=linestyle)
-                axs[1].plot(timesteps, qd[:, i], label=str(i), linestyle=linestyle)
+                axs[0].plot(timesteps, q[:, i], label=f"q{i}", linestyle=linestyle)
+                axs[1].plot(timesteps, qd[:, i], label=f"qd{i}", linestyle=linestyle)
 
-            for i in range(q.shape[-1] - 2, q.shape[-1]):
-                axs[0].plot(timesteps, q[:, i] * 50, label=str(i), linestyle=linestyle)
-                axs[1].plot(timesteps, qd[:, i] * 50, label=str(i), linestyle=linestyle)
+            # for i in range(q.shape[-1] - 2, q.shape[-1]):
+            #     axs[0].plot(timesteps, q[:, i] * 50, label=str(i), linestyle=linestyle)
+            #     axs[1].plot(timesteps, qd[:, i] * 50, label=str(i), linestyle=linestyle)
 
-    plt.legend()
+    axs[0].legend()
+    axs[0].set_title("joint pos")
+    axs[1].legend()
+    axs[1].set_title("join vel")
+    # plt.legend()
     plt.show()
 

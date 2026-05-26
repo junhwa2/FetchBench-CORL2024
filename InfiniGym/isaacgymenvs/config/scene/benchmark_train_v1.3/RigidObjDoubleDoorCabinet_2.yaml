@@ -1,0 +1,4 @@
+name: RigidObjDoubleDoorCabinet_2
+scene_list:
+- benchmark_train/DoubleDoorCabinet/DoubleDoorCabinetSceneFactory_45
+num_tasks: 60

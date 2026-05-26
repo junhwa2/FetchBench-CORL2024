@@ -1,0 +1,134 @@
+# used to create the object
+name: FetchMeshCuroboGORun
+prefix: Debug
+
+# GA-Mesh-Curobo
+defaults:
+    - FetchBase
+    - _self_
+
+
+viewer:
+  camPos: [-2.0, 1.5, 2.5]
+  camTar: [0, 0, 0.7]
+  enable: True
+
+
+# if given, will override the device setting in gym. 
+env:
+  numEnvs: 1
+  numTasks: null
+  enableDebugVis: False
+
+  aggregateMode: 0
+  aggregateBody: 30
+  aggregateShape: 1000
+
+  armControlType: joint  # options are {joint, osc}
+  gripperControlType: velocity
+
+  # set to True if you use camera sensors in the environment
+  enableCameraSensors: True
+
+  # Keep URDF/mesh materials on object actors (skip the default-blue paint at
+  # env-creation in fetch_base._create_envs). Target highlight (red) still
+  # applies during a task; non-target objs render with their real material.
+  preserve_obj_material: True
+
+solution:
+  cuRobo:
+    ik_rot_th: 0.02
+    ik_pos_th: 0.002
+    ik_num_seed: 64 #32
+    trjopt_num_seed: 8 #16
+    graph_num_seed: 4
+    collision_activation_dist: 0.025
+    motion_interpolation_dt: 0.01
+    motion_interpolation_steps: 5000
+    motion_gen_timeout: 30 #60
+    motion_gen_max_attempts: 100
+    motion_trajopt_steps: 30 #40
+
+    velocity_scale: 0.1
+    acceleration_scale: 0.1
+
+    enable_graph: True
+    enable_opt: True
+
+    attach_object_z_offset: 0.0025
+    surface_sphere_radius: 0.0005
+    sphere_approx_method: 0  # 0: sample_surface 1: voxel_volume_sample_surface
+
+  grasp_label:
+    gripper_type: cvx
+    use_flex_label: False
+    use_isaac_force_label: True
+    use_isaac_success_label: False
+
+  init_steps: 60 #20
+  eval_steps: 60
+  gripper_steps: 45 #90
+
+  max_grasp_pose: 200
+  move_offset_method: cartesian_linear
+  video_freq: 8
+
+  direct_grasp: True #False
+  pre_grasp_offset: 0.02 # 0.04
+  retract_offset: 0.01 # 0.02
+  grasp_overshoot_ratio: 1.05
+  disable_grasp_obj_ik_collision: True #False
+  disable_grasp_obj_motion_gen: True #False
+  attach_goal_obj: True
+
+  num_step_repeat_per_plan_dt: 2 # usually motion_interpolation_dt / sim_dt
+  num_osc_repeat: 12
+  num_cartesian_steps: 5
+
+  # --- KB plan visualization (kb_plan_vis_debug) ---
+  kb_plan_vis:
+    # Render robot at initial pose + table (both semi-transparent). Turn off
+    # for a cleaner shot of just the scene + objects + grasp markers.
+    show_robot_table: True
+    # Fade non-plan candidate objs (alpha=90) so the target + plan obstacles
+    # pop. Turn off to render every candidate obj at full opacity.
+    fade_obstacles: True
+    # Cylinder radius for the parallel-jaw gripper marker (meters). Larger
+    # values make the gripper outline thicker / easier to spot in renders.
+    # 0.002 reproduces the legacy hard-coded value; 0.0035 is the new
+    # default — chunkier without overwhelming the obj.
+    gripper_tube_radius: 0.0035
+
+  # --- Singulation data sources ---
+  # Obstruction GT folder under $ASSET_PATH, including benchmark split.
+  obs_folder: Obstruction_test/benchmark_eval
+  # Prediction folder under $ASSET_PATH. Set to null to use obs GT collision
+  # for the KB instead of any learned prediction.
+  pred_folder: null # 20260516_vorm
+
+  # --- Singulation planner ---
+  # Hard cap on backward-chaining search time per task (seconds).
+  plan_time_limit: 2.0
+  # Use the full obstacle-bucket set (no superset absorption) when feeding
+  # the KB to backward-chaining. False = minimal clauses only (smaller
+  # search). True = expose every distinct obstacle bucket → BC + grasp
+  # selection see more options at the cost of larger DNF expansion.
+  use_full_obs: True
+  # --- Final-target tiebreak (when min_clear is equal across candidates) ---
+  # List of signals applied in order after the primary -min_clear sort key.
+  # Each item is one of:
+  #   'volume'         → smaller obj first (uses trimesh.volume or AABB
+  #                      fallback for non-watertight meshes)
+  #   'avg_min_grasps' → larger mean grasp count over the min_clear clauses
+  #                      first (more options for motion planning)
+  # Final fallback is obj_id ascending (always applied last).
+  # Examples:
+  #   ['volume', 'avg_min_grasps'] → prefer small obj; tiebreak by grasp pool
+  #   ['avg_min_grasps', 'volume'] → prefer grasp-rich obj; tiebreak by size
+  #   []                           → obj_id-only tiebreak (legacy)
+  target_tiebreak_order: ['avg_min_grasps', 'volume']
+
+  # --- Per-step execute-success thresholds (see _execute_plan_step) ---
+  # Max change in obj↔EEF distance from close → end of carry (m). Bigger drift
+  # means the obj slipped out of the gripper sometime during carry.
+  execute_dist_drift_tol: 0.3
