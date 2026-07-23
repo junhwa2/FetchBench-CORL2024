@@ -84,6 +84,22 @@ def _pred_out_path(log_dir: Path, root: Path, h5_path: Path) -> Path:
     return log_dir / rel.parent / (h5_path.stem + "_pred.h5")
 
 
+def _grn_pred_out_path(log_dir: Path, root: Path, h5_path: Path) -> Path:
+    """GRN-specific output path. Source files live at
+    <root>/<Category>/<Scene>/grn/grouped_data_t<N>.h5; we drop the trailing
+    'grn/' segment and rename the stem so the output matches the fcl/cbn/scn
+    layout consumed by FetchMeshCuroboGORun.load_prediction_h5:
+    <log_dir>/<Category>/<Scene>/obstruction_data_t<N>_pred.h5"""
+    rel = h5_path.relative_to(root)
+    parent_parts = list(rel.parent.parts)
+    if parent_parts and parent_parts[-1] == "grn":
+        parent_parts = parent_parts[:-1]
+    stem = h5_path.stem
+    if stem.startswith("grouped_data_"):
+        stem = "obstruction_data_" + stem[len("grouped_data_"):]
+    return log_dir.joinpath(*parent_parts, stem + "_pred.h5")
+
+
 def _write_pred_h5(out_path: Path, **datasets) -> None:
     """Write a per-scene-task prediction h5. Pass any of:
     collision_label/pred/prob, feasibility_label/pred/prob. None values are
@@ -848,13 +864,73 @@ def build_grn_arrays(
         file_times = np.full(num_grasp_poses, inference_time, dtype=np.float32)
 
         if log_dir is not None:
-            # GRN outputs per-cell collision probability and per-pose feasibility
-            # probability; pred = (prob >= 0.5).
+            # GRN's grasp-pose ordering matches the sibling obs h5 (qpos[i] is
+            # the IK for grasp pose i), but its movable indexing is a permutation
+            # of obs's, and its fixed objects are stored per-object (vs. obs's
+            # single fixed-aggregate column). To make the dumped file pass the
+            # sim's array_equal(pred_label, obs_collision) check, we:
+            #   1) read the sibling obs h5,
+            #   2) derive perm[grn_idx]=obs_idx from row-wise target pairs,
+            #   3) permute the movable cols of preds into obs ordering,
+            #   4) dump obs's collision verbatim as collision_label.
+            obs_h5 = h5_path.parent.parent / f"obstruction_data_t{t_idx}.h5"
+            if not obs_h5.is_file():
+                raise FileNotFoundError(
+                    f"sibling obstruction h5 missing for GRN dump: {obs_h5}"
+                )
+            with h5py.File(obs_h5, "r") as f:
+                obs_collision = np.asarray(f["collision"], dtype=np.bool_)
+                obs_target = np.asarray(f["target"], dtype=np.int32).reshape(-1)
+            if obs_collision.shape[0] != num_grasp_poses:
+                raise ValueError(
+                    f"row mismatch obs={obs_collision.shape[0]} vs grn={num_grasp_poses} "
+                    f"at {obs_h5}"
+                )
+            perm = -np.ones(num_movables, dtype=np.int64)
+            for i in range(num_grasp_poses):
+                gi, oi = int(grn_target[i]), int(obs_target[i])
+                if 0 <= gi < num_movables and 0 <= oi < num_movables:
+                    if perm[gi] == -1:
+                        perm[gi] = oi
+                    elif perm[gi] != oi:
+                        raise ValueError(
+                            f"inconsistent grn->obs target permutation at row {i}: "
+                            f"grn_t={gi} obs_t={oi} perm[gi]={perm[gi]} ({obs_h5})"
+                        )
+            # Movables that are never picked as a target (IK failed for all of
+            # their grasp candidates) leave gaps in `perm`. Complete the
+            # bijection from the unused obs indices: a single gap is forced; >1
+            # gaps are ambiguous so we assign in sorted order with a warning
+            # (those columns may still be queried by the KB but we have no
+            # ground-truth correspondence to choose).
+            unmapped_grn = np.where(perm < 0)[0]
+            unused_obs = np.setdiff1d(
+                np.arange(num_movables, dtype=np.int64),
+                perm[perm >= 0],
+            )
+            if len(unmapped_grn) != len(unused_obs):
+                raise ValueError(
+                    f"unmapped grn {unmapped_grn.tolist()} vs unused obs "
+                    f"{unused_obs.tolist()} counts differ at {obs_h5}"
+                )
+            if len(unmapped_grn) > 1:
+                print(
+                    f"[WARN] ambiguous grn->obs movable permutation at {obs_h5}: "
+                    f"unmapped grn={unmapped_grn.tolist()} "
+                    f"unused obs={unused_obs.tolist()} → assigning in sorted "
+                    "order (may be incorrect for these columns)"
+                )
+            for gi, oi in zip(unmapped_grn, unused_obs):
+                perm[gi] = oi
+            preds_obs = np.zeros_like(preds)
+            preds_obs[:, perm] = preds[:, :num_movables]   # permute movable cols
+            preds_obs[:, num_movables] = preds[:, num_movables]  # fixed-aggregate stays last
+
             _write_pred_h5(
-                _pred_out_path(log_dir, root, h5_path),
-                collision_label=grn_collision[:, :num_label_cols],
-                collision_pred=(preds >= 0.5),
-                collision_prob=preds,
+                _grn_pred_out_path(log_dir, root, h5_path),
+                collision_label=obs_collision,           # verbatim → sim assertion passes
+                collision_pred=(preds_obs >= 0.5),
+                collision_prob=preds_obs,
                 feasibility_label=feas_label,
                 feasibility_pred=(feas_preds >= 0.5),
                 feasibility_prob=feas_preds,

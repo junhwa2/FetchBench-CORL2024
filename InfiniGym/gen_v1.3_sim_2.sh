@@ -97,9 +97,9 @@ OBS_FOLDER=$OBS_PATH/benchmark_eval
 # short alphanumeric identifier. Use 'null' for pred_folder to fall back to GT.
 PRED_FOLDERS_PREFIX=(
     # "null                               GT"
-    "vorm_obstruction_260516            VORM"
+    # "vorm_obstruction_260516            VORM"
     # "20260525_204327_fcl_urdf_0.025   FCL"
-    # "20260525_205047_grn              GRN"
+    "20260527_143759_grn              GRN"
 )
 
 run_sim() {

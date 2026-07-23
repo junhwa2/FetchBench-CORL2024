@@ -170,8 +170,8 @@ class FetchMeshCuroboGO(FetchPointCloudBase, FetchSolutionBase):
         self.pc_new_id_method = self.cfg["obs_data_gen"]["pc_new_id_method"]
         self.pc_bound_option = self.cfg["obs_data_gen"]["pc_bound_option"]
         self.pc_voxel_size = self.cfg["obs_data_gen"]["pc_voxel_size"]
-        self.mesh_sample_points = self.cfg["obs_data_gen"]["mesh_sample_points"]
-        self.mesh_sample_links = self.cfg["obs_data_gen"]["mesh_sample_links"]    
+        self.mesh_points = self.cfg["obs_data_gen"]["mesh_points"]
+        self.mesh_links = self.cfg["obs_data_gen"]["mesh_links"]    
         self.debug_viz = self.cfg['obs_data_gen']['debug_viz']
         
         self.max_num_task_cand_obj = self.cfg["obs_data_gen"]["max_num_task_cand_obj"]  # (updated for each task) 
@@ -484,7 +484,7 @@ class FetchMeshCuroboGO(FetchPointCloudBase, FetchSolutionBase):
         
         return pc
 
-    def gen_pc_from_pykin_robot(self, geom="collision", sample_points=100000, seed=None, link_names=None):
+    def gen_pc_from_pykin_robot(self, geom="collision", points=100000, seed=None, link_names=None):
         robot_meshes = []
 
         for link, info in self.pykin_robot.info[geom].items():
@@ -520,7 +520,7 @@ class FetchMeshCuroboGO(FetchPointCloudBase, FetchSolutionBase):
 
         if seed is not None:
             np.random.seed(seed)
-        xyz, _ = trimesh.sample.sample_surface(merged_mesh, sample_points)
+        xyz, _ = trimesh.sample.surface(merged_mesh, points)
         xyz = np.asarray(xyz, dtype=np.float32)
 
         robot_seg_id = 1 # IsaacGym index convention
@@ -580,7 +580,7 @@ class FetchMeshCuroboGO(FetchPointCloudBase, FetchSolutionBase):
     Sample Grasp Pose
     """
     @staticmethod
-    def _resample_linear_forward_bias(grasp_x, num_samples):
+    def _relinear_forward_bias(grasp_x, num_samples):
         """Per-grasp probability ∝ owner-object x (clamped non-negative)."""
         # multinomial is run on CPU because the CUDA kernel lacks a
         # deterministic implementation (torch_deterministic=True is set globally).
@@ -589,19 +589,19 @@ class FetchMeshCuroboGO(FetchPointCloudBase, FetchSolutionBase):
         return torch.multinomial(probs, num_samples, replacement=True)
 
     @staticmethod
-    def _resample_softmax_forward_bias(grasp_x, num_samples, temperature):
+    def _resoftmax_forward_bias(grasp_x, num_samples, temperature):
         """Per-grasp probability ∝ exp(x / T). Smaller T -> sharper bias toward far obj."""
         probs = torch.softmax(grasp_x / temperature, dim=0)
         return torch.multinomial(probs, num_samples, replacement=True)
 
     @staticmethod
-    def _resample_uniform(grasp_x, num_samples):
+    def _reuniform(grasp_x, num_samples):
         """Uniform per-grasp probability — no bias. If each obj contributes the same
         number of grasps to the pool, this yields ~uniform per-object sampling too."""
         probs = torch.ones_like(grasp_x) / grasp_x.numel()
         return torch.multinomial(probs, num_samples, replacement=True)
 
-    def sample_annotated_grasp_pose(self):
+    def annotated_grasp_pose(self):
         """
         Build random grasp candidates from all task object candidates.
 
@@ -611,8 +611,8 @@ class FetchMeshCuroboGO(FetchPointCloudBase, FetchSolutionBase):
             object pose: quat (num_envs, num_objs, 4), pos (num_envs, num_objs, 3)
 
         Returns:
-            sample_grasps: (num_envs, max_grasp_pose, 7)
-            sample_grasps_obj: (num_envs, max_grasp_pose, 1)
+            grasps: (num_envs, max_grasp_pose, 7)
+            grasps_obj: (num_envs, max_grasp_pose, 1)
         """
         pose = self.ts['pose']
         oq, ot = pose['object']['quat'], pose['object']['pos']
@@ -653,8 +653,8 @@ class FetchMeshCuroboGO(FetchPointCloudBase, FetchSolutionBase):
                   f"min={min(all_counts)}, max={max(all_counts)}, "
                   f"mean={sum(all_counts)/len(all_counts):.0f})")
 
-        sample_grasps = []
-        sample_targets = []
+        grasps = []
+        targets = []
         for i in range(self.num_envs):
             # cand_obj_index = self.task_cand_obj_index[i][self.get_task_idx()]
             cand_obj_index = self.obs_ids[i]
@@ -709,12 +709,12 @@ class FetchMeshCuroboGO(FetchPointCloudBase, FetchSolutionBase):
             pool_cand_k = torch.tensor([obj_to_cand_k[int(o)] for o in all_objs.tolist()], dtype=torch.long)
             grasp_x = cand_com_world[pool_cand_k, 0].detach().cpu()    # (pool_size,)
             if self.forward_bias_mode == "linear":
-                random_batch = self._resample_linear_forward_bias(grasp_x, max_pose_seed)
+                random_batch = self._relinear_forward_bias(grasp_x, max_pose_seed)
             elif self.forward_bias_mode == "softmax":
-                random_batch = self._resample_softmax_forward_bias(
+                random_batch = self._resoftmax_forward_bias(
                     grasp_x, max_pose_seed, self.forward_bias_softmax_temperature)
             else:  # uniform
-                random_batch = self._resample_uniform(grasp_x, max_pose_seed)
+                random_batch = self._reuniform(grasp_x, max_pose_seed)
 
             # Per-object count of finally selected grasps (includes zero-picked candidates), sorted by count desc.
             picked_objs = all_objs[random_batch].numpy()
@@ -725,26 +725,26 @@ class FetchMeshCuroboGO(FetchPointCloudBase, FetchSolutionBase):
             parts = [f"obj{o}={count_map.get(o, 0)}" for o in sorted_objs]
             print(f"[env {i}] sampled {int(counts.sum())} grasps: " + ", ".join(parts))
 
-            sample_grasps.append(all_obj_grasps[random_batch.to(all_obj_grasps.device)])
-            sample_targets.append(all_objs[random_batch])
+            grasps.append(all_obj_grasps[random_batch.to(all_obj_grasps.device)])
+            targets.append(all_objs[random_batch])
 
-        sample_grasps = torch.stack(sample_grasps, dim=0)
-        sample_targets = torch.stack(sample_targets, dim=0)
+        grasps = torch.stack(grasps, dim=0)
+        targets = torch.stack(targets, dim=0)
 
         # Debug Visualization
         if self.debug_viz:
             print("Debug Visualization of Sampled Grasp Poses")
             grasp_poses = []
-            for i in range(sample_grasps.shape[1]):
-                grasp_poses.append(Pose(sample_grasps[:, i, :3], sample_grasps[:, i, 3:7]))
+            for i in range(grasps.shape[1]):
+                grasp_poses.append(Pose(grasps[:, i, :3], grasps[:, i, 3:7]))
             grasp_poses = Pose.vstack(grasp_poses, dim=1)
             for i in range(self.num_envs):
-                grasp_success = torch.ones((sample_grasps.shape[1]), dtype=torch.bool)   
+                grasp_success = torch.ones((grasps.shape[1]), dtype=torch.bool)   
                 self.grasp_vis_debug(grasp_poses[i], grasp_success, env_idx=i, show=True)
 
         res = {
-            'grasp_poses': sample_grasps,
-            'grasp_targets' : sample_targets,
+            'grasp_poses': grasps,
+            'grasp_targets' : targets,
         }
         
         return res
@@ -1092,7 +1092,7 @@ class FetchMeshCuroboGO(FetchPointCloudBase, FetchSolutionBase):
                 link_collision = {}
                 if result:
                     for co1, co2 in name:
-                        if co1 not in self.mesh_sample_links:
+                        if co1 not in self.mesh_links:
                             continue
                         # if obs_id_map[i][co2] not in self.new_obs_ids[i] and co2 != new_scene_id:
                         #     continue
@@ -1323,8 +1323,8 @@ class FetchMeshCuroboGO(FetchPointCloudBase, FetchSolutionBase):
                 col_obs = np.where(col_result['obs_collision'][i][j])[0]
                 col_qpos = col_result['obs_qpos'][i][j]
                 self._update_pykin_robot_state(col_qpos)
-                pc_robot = self.gen_pc_from_pykin_robot(sample_points=self.mesh_sample_points, 
-                                                        link_names=self.mesh_sample_links)
+                pc_robot = self.gen_pc_from_pykin_robot(points=self.mesh_points, 
+                                                        link_names=self.mesh_links)
                 pc_robot_path = f"ply/pc_robot_t{self._task_idx}_{j}.ply"
                 self.save_pc(pc_robot, f"{obs_dir}/{pc_robot_path}")
                 pc_cams.append(pc_cam_path)
@@ -1594,7 +1594,7 @@ class FetchMeshCuroboGO(FetchPointCloudBase, FetchSolutionBase):
         self.set_task_snapshot()
                 
         # Sample Good Grasp Pose
-        gp_result = self.sample_annotated_grasp_pose()
+        gp_result = self.annotated_grasp_pose()
 
         # Solve IK
         # ik_result = self.solve_ik(gp_result)
