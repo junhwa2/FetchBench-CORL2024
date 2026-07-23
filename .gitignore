@@ -21,10 +21,12 @@ InfiniGym/isaacgymenvs/config/scene/benchmark_eval_v1.2/
 InfiniGym/isaacgymenvs/config/scene/benchmark_train_v1.1/
 InfiniGym/isaacgymenvs/config/scene/benchmark_train_v1.2/
 
-InfiniGym/images
+InfiniGym/images/
 InfiniGym/log*/
-InfiniGym/runs
-InfiniGym/videos
+InfiniGym/runs/
+InfiniGym/videos/
+InfiniGym/scene_images/
+InfiniGym/sim_*/
 scene_images/
 logs/
 
@@ -32,7 +34,7 @@ scripts
 plot_pr_curve.py
 *.sh
 
-.vscode
+.vscode/
 .claude/
 .codex
 CLAUDE.md
