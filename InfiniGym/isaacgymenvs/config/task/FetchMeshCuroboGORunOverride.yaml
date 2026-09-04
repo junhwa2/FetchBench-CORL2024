@@ -1,0 +1,14 @@
+# Phase-2 task: stock FetchMeshCuroboGORun behaviour, plus an optional
+# `solution.target_override` that reads the planner target from a VLM
+# targets.npz sidecar instead of task_config.npz. With target_override unset
+# this is byte-for-byte the stock task. See fetch_mesh_curobo_go_run_override.py.
+defaults:
+    - FetchMeshCuroboGORun
+    - _self_
+
+name: FetchMeshCuroboGORunOverride
+
+solution:
+  # Absolute path to vlm_target_logs/<exp>/targets.npz (Phase-1 output).
+  # null -> read the target from task_config.npz exactly like the stock task.
+  target_override: null

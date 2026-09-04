@@ -1,0 +1,105 @@
+# VLM target-selection pass (Phase 1 of VLM+VORM).
+# Inherits the full FetchMeshCuroboGORun scene/solution config; only overrides
+# the name and adds the `solution.vlm` block. `solve()` is replaced by the
+# subclass, so the planner/pred_folder/obs_folder fields are inherited but
+# unused during this pass.
+defaults:
+    - FetchMeshCuroboGORun
+    - _self_
+
+name: FetchMeshCuroboGORunVLM
+
+solution:
+  vlm:
+    # --- backend selection ---
+    # gemini : call Gemini Robotics-ER over the REST API (needs GEMINI_API_KEY /
+    #          GOOGLE_API_KEY, or set api_key below). No SDK install required.
+    # oracle : no network; uses ground-truth seg to emit a candidate point.
+    #          oracle_mode=gt     -> plumbing check (accuracy must be ~1.0)
+    #          oracle_mode=random -> CHANCE-LEVEL BASELINE. Run this once per
+    #                                scene set; a Gemini accuracy is only
+    #                                interpretable against this number.
+    backend: gemini
+    # gemini-robotics-er-2-preview supersedes ER 1.6 (retired ~end of Aug 2026).
+    # gemini-robotics-er-2-streaming-preview is the low-latency streaming variant.
+    model: gemini-robotics-er-2-preview
+    api_key: null            # leave null; key comes from GEMINI_API_KEY env
+    temperature: 0.0
+    thinking_budget: 0        # 0 = fastest pointing; raise for harder scenes
+    timeout: 60.0
+    # Transient 429 / 5xx / timeout used to fall straight through to
+    # `fallback: gt`, which the old scoring counted as a CORRECT answer.
+    # Retry first; if it still fails the task is scored as WRONG.
+    max_retries: 3
+    retry_base_delay: 2.0
+    # Prompt preamble. The old hard-coded "tabletop / shelf scene" was wrong
+    # for Drawer / Cabinet / RoundTable scenes.
+    scene_description: "The image shows a cluttered indoor scene viewed by a robot."
+
+    # oracle backend only:
+    oracle_mode: gt           # gt | random
+
+    # --- query style ---
+    # point : free-form pointing, resolved through the segmentation mask.
+    # mark  : numbered markers are drawn on the visible candidates and the
+    #         model returns one number. Removes seg-snapping ambiguity and the
+    #         "pointed at an identical non-candidate" failure mode. Strongest
+    #         single lever on accuracy; also an easier task, so report it as a
+    #         separate condition rather than swapping it in silently.
+    prompt_mode: point        # point | mark
+    # Self-consistency: N draws, majority vote on the resolved object.
+    # N > 1 forces temperature >= 0.4 after the first draw.
+    num_samples: 1
+
+    # --- instruction & resolution ---
+    # label_source: where {label} comes from ---
+    #   category      -> real object name from asset_config.json (e.g. "telephone").
+    #                    If another object shares the category, a left/right
+    #                    qualifier is appended (e.g. "left laptop").
+    #   object_labels -> coarse benchmark label (rigid_obj_on_table/floor).
+    label_source: category
+    # Case/synonym-insensitive duplicate detection for the qualifier
+    # ('vase' vs 'Vase', 'plantcontainer' vs 'PottedPlant').
+    normalize_category: True
+    # Which objects count when deciding whether the instruction is ambiguous:
+    #   visible   -> every object actually on screen (>= min_visible_px px).
+    #                Correct default: the VLM sees non-candidates too, and an
+    #                unqualified "the bottle" is genuinely ambiguous when a
+    #                second bottle is in frame.
+    #   candidate -> legacy: candidate objects only.
+    ambiguity_scope: visible
+    min_visible_px: 30
+    instruction_template: "Pick up the {label}."
+    resolve_window: 15        # px half-window for the seg window-vote step
+    # nearest-centroid snapping turns "pointed at an unrelated object" into
+    # "resolved to some candidate", which is why resolve_rate was always 1.0.
+    # Keep True for pipeline throughput, but the strict grounding number to
+    # report is `point_accuracy` (raw pixel under the point == gt).
+    # Set False to measure resolution without any snapping.
+    allow_centroid_snap: True
+    seg_offset: 4             # seg_pixel == old_id + seg_offset (FetchBench convention)
+
+    # When the VLM answer can't be resolved to a candidate:
+    #   gt         -> write the benchmark target so Phase 2 still runs
+    #   first_cand -> write the first candidate
+    #   none       -> record nothing for this task
+    # In every case the task is scored as INCORRECT (`used_fallback=True`).
+    fallback: gt
+
+    # --- rendering ---
+    # null -> use solution.init_steps (60), i.e. the same settling the planner
+    # gets. The old hard-coded 20 let the VLM look at a still-moving scene.
+    settle_steps: null
+    # fetch_base appends a fixed third-person "vis" camera after the
+    # cfg.env.cam.num_cam sensor cameras. Keep it out of the camera vote.
+    use_vis_camera: False
+
+    # --- persistence ---
+    # False (default): the benchmark dataset under $ASSET_PATH is NEVER
+    # modified. Phase 1 writes vlm_target_logs/<exp>/targets.npz and Phase 2
+    # reads it via task.solution.target_override=<path>.
+    # True: legacy in-place overwrite of task_config.npz (order-dependent,
+    # not parallel-safe, clobbered by any later GT-mode run).
+    write_task_config: False
+    backup_task_config: True  # legacy mode only: copy task_config.npz -> .vlm_bak
+    save_debug_image: False   # RGB overlay: red point, green chosen, blue gt

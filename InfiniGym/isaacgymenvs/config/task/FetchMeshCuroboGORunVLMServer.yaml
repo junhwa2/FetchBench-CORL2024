@@ -1,0 +1,47 @@
+# Closed-loop server task for the VLM+VORM pipeline.
+# Inherits the full FetchMeshCuroboGORunVLM config (VLM/Gemini-ER block +
+# GORun scene/solution). `solve()` is never called; vlm_sim_server.py drives
+# the env through server_reset / server_observe / server_decide_goal /
+# server_execute over a file-RPC. See VLM_SIM_RPC_SPEC.md.
+defaults:
+    - FetchMeshCuroboGORunVLM
+    - _self_
+
+name: FetchMeshCuroboGORunVLMServer
+
+# FetchPointCloudBase.__init__ (multiple-inherited by the server task) builds the
+# depth point-cloud engine from env.cam and needs depth_min/depth_max, which the
+# GORun chain (FetchBase.yaml) does not define. Match FetchMeshCuroboGO.yaml.
+env:
+  cam:
+    depth_min: 0.15
+    depth_max: 2.5
+
+solution:
+  vlm:
+    # Point-cloud filtering for gen_pc_from_camera / _filter_pc (borrowed from
+    # FetchMeshCuroboGO). Same values as its obs_data_gen block; set here on the
+    # vlm cfg so the server needs no obs_data_gen section.
+    pc_bound_option: panda_w_gripper_sphere
+    pc_voxel_size: 0.015
+    # Fixed primary camera used for BOTH the VLM view and the point-cloud RGB.
+    # Target-agnostic on purpose (no ground-truth camera picking) so the closed
+    # loop cannot leak the target location. Index into cfg.env.cam sensors.
+    server_cam_idx: 0
+
+    # Save what the VLM saw each decide step: <stem>_input.png (the exact clean
+    # RGB fed to the model) + <stem>_overlay.png (red=VLM point, green=chosen,
+    # blue=GT target). Written to vlm_target_logs/<server exp>/. Off by default.
+    save_vlm_io: False
+
+    # Reveal reasoning (ThinkGrasp core). True -> the sim-side VLM uses
+    # RevealERClient: it decides grasp_target vs remove_occluder AND points, so
+    # is_target comes from the model, not the category proxy. See
+    # utils/vlm_target/reveal_er_client.py::_REVEAL_PROMPT.
+    # Set False (or backend=oracle) to fall back to plain pointing + the proxy.
+    reveal: True
+    # Occluder reasoning benefits from letting the model think. thinking_budget
+    # is inherited as 0 (Phase-1 fast pointing); RAISE it here (e.g. 512-2048
+    # tokens) for harder full-occlusion scenes. Left at the inherited value by
+    # default so a wrong budget can't break every call before you've tested it.
+    # thinking_budget: 1024

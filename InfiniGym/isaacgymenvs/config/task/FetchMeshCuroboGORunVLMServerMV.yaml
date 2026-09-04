@@ -1,0 +1,21 @@
+# Multi-view variant of the closed-loop server task.  NEW FILE ONLY.
+#
+# Adds the elevated 'vis' camera (world [-2,0,2.5]->[0,0,0.5]) to the observed
+# point cloud so front-to-back occlusion is resolved (see server_task_mv.py and
+# KNOWN_ISSUES.md "Perception coverage").  Everything else is inherited from the
+# single-view server config unchanged.
+defaults:
+    - FetchMeshCuroboGORunVLMServer
+    - _self_
+
+name: FetchMeshCuroboGORunVLMServerMV
+
+env:
+  cam:
+    depth_min: 0.15
+    # Raised from 2.5: the vis camera is ~3.2 m from the scene, so with the
+    # default range its points are culled by the near/far filter
+    # (point_cloud_utils.py:39).  The 1.06 m workspace sphere crop in _filter_pc
+    # (fetch_mesh_curobo_go.py:346-375) removes anything outside the workspace
+    # afterward, so a wider depth range cannot leak background points.
+    depth_max: 3.5
